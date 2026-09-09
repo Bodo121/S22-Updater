@@ -1,2 +1,8 @@
-out/
-debug.keystore
+/out/
+*.keystore
+*.jks
+*.idsig
+*.part
+local.properties
+.idea/
+.DS_Store

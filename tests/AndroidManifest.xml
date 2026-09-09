@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.bodo121.s22updater.tests">
+    <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="34" />
+    <application android:label="S22 smoke tests" />
+    <instrumentation android:name=".SmokeTest" android:targetPackage="com.bodo121.s22updater" />
+</manifest>

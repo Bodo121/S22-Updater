@@ -1,9 +1,10 @@
-#!/bin/sh
+#!/bin/bash
 # build.sh — build S22-Updater APK without Android Studio/Gradle.
 # Needs: JDK 17, Android build-tools (aapt/aapt2/d8/zipalign/apksigner),
 #        platform android.jar. Override via env:
 #   JAVA_HOME, BT (build-tools dir), PLATFORM (android.jar)
-set -u
+set -euo pipefail
+shopt -s globstar nullglob
 fail() { echo "build: ERROR: $*" >&2; exit 1; }
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -21,12 +22,15 @@ OUT="$HERE/out"
 rm -rf "$OUT"
 mkdir -p "$OUT/compiled_res" "$OUT/classes" "$OUT/dex"
 
+sources=("$HERE"/src/**/*.java)
+[ "${#sources[@]}" -gt 0 ] || fail "no Java sources"
 echo "build: [1/6] javac"
-"$JAVA_HOME/bin/javac" -source 8 -target 8 -nowarn \
-  -bootclasspath "$PLATFORM" \
+"$JAVA_HOME/bin/javac" --release 8 -nowarn \
+  -classpath "$PLATFORM" \
   -d "$OUT/classes" \
-  $(find "$HERE/src" -name "*.java") || fail "javac failed"
-[ -n "$(find "$OUT/classes" -name '*.class' | head -n 1)" ] || fail "no classes compiled"
+  "${sources[@]}" || fail "javac failed"
+classes=("$OUT"/classes/**/*.class)
+[ "${#classes[@]}" -gt 0 ] || fail "no classes compiled"
 
 echo "build: [2/6] aapt2 compile"
 "$BT/aapt2" compile --dir "$HERE/res" -o "$OUT/compiled_res.zip" || fail "aapt2 compile"
@@ -35,7 +39,7 @@ echo "build: [3/6] d8"
 "$JAVA_HOME/bin/java" -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 \
   --lib "$PLATFORM" --min-api 28 \
   --output "$OUT/dex" \
-  $(find "$OUT/classes" -name "*.class") || fail "d8 failed"
+  "${classes[@]}" || fail "d8 failed"
 ls "$OUT/dex/classes.dex" >/dev/null || fail "classes.dex missing"
 
 echo "build: [4/6] aapt2 link"
@@ -43,8 +47,7 @@ echo "build: [4/6] aapt2 link"
   -I "$PLATFORM" \
   --manifest "$HERE/AndroidManifest.xml" \
   "$OUT/compiled_res.zip" \
-  --min-sdk-version 28 --target-sdk-version 34 \
-  --version-code 2 --version-name 2.0 || fail "aapt2 link"
+  --min-sdk-version 28 --target-sdk-version 34 || fail "aapt2 link"
 
 echo "build: [5/6] add dex + align"
 cp "$OUT/unsigned.apk" "$OUT/app.apk"
@@ -59,7 +62,8 @@ if [ ! -f "$KS" ]; then
     -validity 10950 -dname "CN=Android Debug,O=Android,C=US" || fail "keytool"
 fi
 "$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android \
-  --out "$OUT/S22-Updater-v1.apk" "$OUT/aligned.apk" || fail "apksigner"
-"$BT/apksigner" verify --print-certs "$OUT/S22-Updater-v1.apk" | head -n 4
-ls -lh "$OUT/S22-Updater-v1.apk"
-echo "build: DONE -> $OUT/S22-Updater-v1.apk"
+  --out "$OUT/S22-Updater-v3.apk" "$OUT/aligned.apk" || fail "apksigner"
+"$BT/apksigner" verify --verbose --print-certs "$OUT/S22-Updater-v3.apk"
+"$BT/zipalign" -c 4 "$OUT/S22-Updater-v3.apk"
+ls -lh "$OUT/S22-Updater-v3.apk"
+echo "build: DONE -> $OUT/S22-Updater-v3.apk"
