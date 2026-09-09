@@ -25,7 +25,7 @@ echo "build: [1/6] javac"
 "$JAVA_HOME/bin/javac" -source 8 -target 8 -nowarn \
   -bootclasspath "$PLATFORM" \
   -d "$OUT/classes" \
-  $(find "$HERE/src" -name "*.java") 2>&1 | grep -v "bootstrap\|deprecat" || true
+  $(find "$HERE/src" -name "*.java") || fail "javac failed"
 [ -n "$(find "$OUT/classes" -name '*.class' | head -n 1)" ] || fail "no classes compiled"
 
 echo "build: [2/6] aapt2 compile"
@@ -44,7 +44,7 @@ echo "build: [4/6] aapt2 link"
   --manifest "$HERE/AndroidManifest.xml" \
   "$OUT/compiled_res.zip" \
   --min-sdk-version 28 --target-sdk-version 34 \
-  --version-code 1 --version-name 1.0 || fail "aapt2 link"
+  --version-code 2 --version-name 2.0 || fail "aapt2 link"
 
 echo "build: [5/6] add dex + align"
 cp "$OUT/unsigned.apk" "$OUT/app.apk"

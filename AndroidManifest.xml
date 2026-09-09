@@ -1,14 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.bodo121.s22updater"
-    android:versionCode="1"
-    android:versionName="1.0">
+    android:versionCode="2"
+    android:versionName="2.0">
 
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
-        android:label="S22 Updater"
+        android:label="@string/app_name"
         android:theme="@android:style/Theme.Material.Light.NoActionBar"
         android:allowBackup="true">
         <activity
