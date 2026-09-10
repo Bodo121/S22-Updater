@@ -49,20 +49,30 @@ final class KernelSetup {
             }
             transport.run("set -e; actual=$(sha256sum " + qStaged + "); [ \"${actual%% *}\" = '" + SHA
                     + "' ]; mv -f " + qStaged + " " + qDevice, scratch);
-            String insmod;
+            // The KDP manual loader can report "Operation not permitted" while
+            // the module is actually live, so the final verdict is presence in
+            // /sys/module/kernelsu — not the loader's exit code.
+            String lastError = "";
             if (helperPath != null && !helperPath.isEmpty()) {
-                insmod = Shell.quote(helperPath) + " -c " + Shell.quote("insmod " + DEVICE_MODULE);
-            } else {
-                insmod = "insmod " + Shell.quote(DEVICE_MODULE);
+                try {
+                    transport.run(Shell.quote(helperPath) + " -c "
+                            + Shell.quote("insmod " + DEVICE_MODULE)
+                            + " && test -d /sys/module/kernelsu", scratch);
+                    return "KernelSU loaded and verified for this boot";
+                } catch (Exception e) {
+                    lastError = e.getMessage() == null ? "loader failed" : e.getMessage();
+                }
             }
             try {
-                transport.run(insmod + " && test -d /sys/module/kernelsu", scratch);
-            } catch (Exception first) {
-                if (helperPath == null || helperPath.isEmpty()) throw first;
                 transport.run("insmod " + Shell.quote(DEVICE_MODULE)
                         + " && test -d /sys/module/kernelsu", scratch);
+                return "KernelSU loaded and verified for this boot";
+            } catch (Exception e) {
+                lastError = e.getMessage() == null ? "loader failed" : e.getMessage();
             }
-            return "KernelSU loaded and verified for this boot";
+            if ("loaded".equals(status(transport, scratch)))
+                return "KernelSU is loaded and verified (loader warned: " + lastError + ")";
+            throw new IOException("KernelSU load failed: " + lastError);
         } finally {
             module.delete();
         }

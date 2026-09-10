@@ -22,15 +22,15 @@ public final class SmokeTest extends Instrumentation {
     }
     private void check(Activity activity) {
         View decor = activity.getWindow().getDecorView();
-        for (String label : new String[]{"Check root access", "Authorize Shizuku shell", "Open Shizuku app", "Diagnose Shizuku handshake", "Check for updates", "Run exploit", "Refresh changelog", "Save feed URL", "Check for app updates"}) {
+        for (String label : new String[]{"Check for updates", "Check root", "Authorize Shizuku", "Open KernelSU Manager", "Refresh changelog", "Save feed URL", "Check for app updates", "Diagnose Shizuku handshake"}) {
             TextView button = find(decor, label);
             if (button == null || !button.hasOnClickListeners()) throw new AssertionError("Unwired: " + label);
         }
-        for (String label : new String[]{"Updates", "Activity", "Settings", "Home"}) {
+        for (String label : new String[]{"Log", "Settings", "Home"}) {
             TextView button = find(decor, label);
             if (button == null || !button.performClick()) throw new AssertionError("Navigation: " + label);
         }
-        if (find(decor, "Not checked") == null) throw new AssertionError("Root status missing");
+        if (find(decor, "Root: not checked") == null) throw new AssertionError("Root status missing");
     }
     @Override public void onStart() {
         Bundle result = new Bundle();

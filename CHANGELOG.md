@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.7
+
+### Fixed
+- KernelSU verdict is now presence-based: a loader "Operation not permitted"
+  warning no longer reports failure when /sys/module/kernelsu is live.
+
+### Changed
+- Simpler Home modeled on Root-My-Galaxy: one status card with a single
+  context-aware action (check → download → root → run → KernelSU), a 4-step
+  progress tracker, compact access rows, device card, and live log. Log and
+  Settings keep history, feed, Shizuku tools, export, and app updates.
+
 ## 4.6
 
 ### Fixed

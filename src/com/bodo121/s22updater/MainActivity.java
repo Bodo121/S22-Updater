@@ -26,19 +26,20 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<Button> actions = new ArrayList<>();
     private final List<Payload> payloads = new ArrayList<>();
-    private final LinearLayout[] pages = new LinearLayout[4];
-    private final Button[] tabs = new Button[4];
-    private TextView status, local, remote, rootStatus, shizukuStatus, managerStatus,
-            kernelStatus, activityLog, changelog, appUpdateStatus, installPermStatus;
+    private final LinearLayout[] pages = new LinearLayout[3];
+    private final Button[] tabs = new Button[3];
+    private TextView status, flowHint, rootStatus, shizukuStatus, managerStatus,
+            kernelStatus, activityLog, changelog, appUpdateStatus, installPermStatus,
+            stepFeed, stepPayload, stepRoot, stepKsu, deviceInfo, homeLog;
     private ProgressBar progress;
-    private LinearLayout choices;
     private EditText feedInput;
-    private Button download, deploy, runExploit, export, loadKernel, checkAppUpdate;
+    private Button flowAction, checkAppUpdate;
     private Switch automaticKernel, automaticAppUpdate;
     private SharedPreferences preferences;
     private Payload selected;
     private File exportFile;
-    private boolean busy, rootGranted, shizukuGranted;
+    private boolean busy, rootGranted, shizukuGranted, exploitRooted, ksuLoaded;
+    private final StringBuilder runLog = new StringBuilder();
     private volatile boolean closed;
     private int bg, surface, ink, muted, accent, border, pageIndex;
 
@@ -115,13 +116,12 @@ public class MainActivity extends Activity {
             content.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
         }
         buildHome();
-        buildUpdates();
-        buildActivity();
+        buildLog();
         buildSettings();
         LinearLayout navigation = new LinearLayout(this);
         navigation.setBackgroundColor(surface);
         navigation.setPadding(dp(6), dp(8), dp(6), dp(8));
-        String[] names = {"Home", "Updates", "Activity", "Settings"};
+        String[] names = {"Home", "Log", "Settings"};
         for (int i = 0; i < tabs.length; i++) {
             final int index = i;
             tabs[i] = makeButton(names[i], false);
@@ -136,7 +136,7 @@ public class MainActivity extends Activity {
         updateManager();
         refreshControls();
         watchShizukuBinder();
-        log("Ready. Feed checks and root requests run when you tap their buttons.");
+        log("Ready. One button walks the whole flow: update info, payload, exploit, KernelSU.");
         if (preferences.getBoolean("auto_app_update", false)) checkAppUpdate();
     }
 
@@ -177,7 +177,7 @@ public class MainActivity extends Activity {
                         @Override public void onBinderDead() {
                             post(() -> {
                                 shizukuGranted = false;
-                                shizukuStatus.setText("Shizuku shell: binder died");
+                                shizukuStatus.setText("Shizuku: binder died");
                                 log("Shizuku binder died — restart Shizuku if needed");
                             });
                         }
@@ -299,72 +299,51 @@ public class MainActivity extends Activity {
                 final boolean granted = running && Shell.shizukuGranted();
                 post(() -> {
                     shizukuGranted = granted;
-                    if (granted) shizukuStatus.setText("Shizuku shell: authorized");
-                    else if (running) shizukuStatus.setText("Shizuku shell: awaiting authorization");
+                    if (granted) shizukuStatus.setText("Shizuku: authorized");
+                    else if (running) shizukuStatus.setText("Shizuku: awaiting authorization");
                     else shizukuStatus.setText(isPackageInstalled("moe.shizuku.manager")
-                            ? "Shizuku shell: service not connected"
-                            : "Shizuku shell: manager not installed");
+                            ? "Shizuku: service not connected"
+                            : "Shizuku: not installed");
                 });
             }
         }).start();
     }
 
     private void buildHome() {
-        LinearLayout device = card(pages[0], "DEVICE");
-        text(device, Build.MODEL, 23, ink, true);
-        text(device, "Android " + Build.VERSION.RELEASE + " • " + Build.DISPLAY, 13, muted, false);
-        LinearLayout root = card(pages[0], "ROOT ACCESS");
-        rootStatus = text(root, "Not checked", 20, ink, true);
-        text(root, "Check whether this app has superuser access. Approve the request in your root manager.", 14, muted, false);
-        action(root, "Check root access", this::checkRoot);
-        shizukuStatus = text(root, "Shizuku shell: not checked", 14, muted, false);
-        action(root, "Authorize Shizuku shell", this::checkShizuku);
-        action(root, "Open Shizuku app", this::openShizuku);
-        action(root, "Diagnose Shizuku handshake", this::diagnoseShizuku);
-        text(root, "Without root, the exploit can still run through a Shizuku shell "
-                + "(install Shizuku, start it via wireless debugging, then authorize this app).", 13, muted, false);
-        LinearLayout manager = card(pages[0], "KERNELSU");
-        managerStatus = text(manager, "Checking manager…", 18, ink, true);
-        kernelStatus = text(manager, "Kernel module: check root first", 14, muted, false);
-        action(manager, "Open KernelSU Manager", this::openManager);
-        loadKernel = action(manager, "Load matching KernelSU module", () -> {
-            final Shell.Transport transport = pickTransport();
-            if (transport == null) {
-                status.setText("No privileged shell for KernelSU setup");
-                log("KernelSU setup needs root or an authorized Shizuku shell.");
-                return;
-            }
-            job("Setting up KernelSU…", () -> setupKernel(transport));
-        });
-        text(manager, "Late-load setup uses your SM-S901B / S901BXXSNGZD7 module, checks its SHA-256 and confirms /sys/module/kernelsu. Module state lasts for the current boot.", 13, muted, false);
-    }
-
-    private void buildUpdates() {
-        LinearLayout feed = card(pages[1], "UPDATE CENTER");
-        status = text(feed, "Ready to check", 21, ink, true);
+        LinearLayout statusCard = card(pages[0], "STATUS");
+        status = text(statusCard, "Ready to check", 21, ink, true);
+        flowHint = text(statusCard, "One button walks the whole flow: update info, payload, exploit, KernelSU.", 13, muted, false);
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setIndeterminateTintList(ColorStateList.valueOf(accent));
         progress.setProgressTintList(ColorStateList.valueOf(accent));
         progress.setVisibility(View.GONE);
-        feed.addView(progress, new LinearLayout.LayoutParams(-1, dp(8)));
-        action(feed, "Check for updates", this::checkFeed);
-        choices = card(pages[1], "AVAILABLE PAYLOADS");
-        text(choices, "Load the feed to choose a payload.", 14, muted, false);
-        LinearLayout detail = card(pages[1], "SELECTED UPDATE");
-        remote = text(detail, "No payload selected", 16, ink, true);
-        local = text(detail, "Local copy: not checked", 13, muted, false);
-        local.setTextIsSelectable(true);
-        download = action(detail, "Download update", this::download);
-        deploy = action(detail, "Install downloaded file with root", this::deploy);
-        runExploit = action(detail, "Run exploit", this::runExploit);
-        export = action(detail, "Export downloaded file", this::export);
-        text(detail, "Download saves a private copy. Root install copies it to /data/local/tmp/cve-2026-43499 "
-                + "and verifies its hash. Run exploit executes the staged payload through root or a Shizuku "
-                + "shell, then asks whether to install KernelSU.", 13, muted, false);
+        statusCard.addView(progress, new LinearLayout.LayoutParams(-1, dp(8)));
+        flowAction = action(statusCard, "Check for updates", this::primaryAction);
+        LinearLayout steps = card(pages[0], "PROGRESS");
+        stepFeed = text(steps, "○  Update info", 14, muted, false);
+        stepPayload = text(steps, "○  Payload", 14, muted, false);
+        stepRoot = text(steps, "○  Root access", 14, muted, false);
+        stepKsu = text(steps, "○  KernelSU", 14, muted, false);
+        LinearLayout access = card(pages[0], "ACCESS");
+        rootStatus = text(access, "Root: not checked", 14, muted, false);
+        action(access, "Check root", this::checkRoot);
+        shizukuStatus = text(access, "Shizuku: not checked", 14, muted, false);
+        action(access, "Authorize Shizuku", this::checkShizuku);
+        text(access, "No root yet? Install Shizuku, start it via wireless debugging, then authorize.", 13, muted, false);
+        LinearLayout manager = card(pages[0], "KERNELSU");
+        managerStatus = text(manager, "Checking manager…", 16, ink, true);
+        kernelStatus = text(manager, "Kernel module: check root first", 14, muted, false);
+        action(manager, "Open KernelSU Manager", this::openManager);
+        LinearLayout device = card(pages[0], "DEVICE");
+        deviceInfo = text(device, "", 13, muted, false);
+        deviceInfo.setTextIsSelectable(true);
+        LinearLayout live = card(pages[0], "LIVE LOG");
+        homeLog = text(live, "Run output appears here while the exploit runs.", 12, ink, false);
+        homeLog.setTypeface(Typeface.MONOSPACE);
     }
 
-    private void buildActivity() {
-        LinearLayout history = card(pages[2], "SESSION ACTIVITY");
+    private void buildLog() {
+        LinearLayout history = card(pages[1], "SESSION LOG");
         activityLog = text(history, "", 13, ink, false);
         activityLog.setTypeface(Typeface.MONOSPACE);
         activityLog.setTextIsSelectable(true);
@@ -374,13 +353,13 @@ public class MainActivity extends Activity {
                     + "\n" + activityLog.getText()));
             Toast.makeText(this, "Diagnostics copied", Toast.LENGTH_SHORT).show();
         });
-        LinearLayout changes = card(pages[2], "PROJECT CHANGELOG");
+        LinearLayout changes = card(pages[1], "PROJECT CHANGELOG");
         action(changes, "Refresh changelog", this::loadChangelog);
         changelog = text(changes, "Recent commits appear here after refreshing.", 14, muted, false);
     }
 
     private void buildSettings() {
-        LinearLayout settings = card(pages[3], "FEED SETTINGS");
+        LinearLayout settings = card(pages[2], "FEED SETTINGS");
         text(settings, "Targets feed URL", 17, ink, true);
         feedInput = new EditText(this);
         feedInput.setText(preferences.getString("feed_url", FEED));
@@ -406,7 +385,7 @@ public class MainActivity extends Activity {
             resetFeed();
             log("Default feed restored.");
         });
-        LinearLayout updater = card(pages[3], "APP UPDATES");
+        LinearLayout updater = card(pages[2], "APP UPDATES");
         appUpdateStatus = text(updater, "S22 Updater " + AppUpdate.installedName(this)
                 + " — app update status unknown", 14, muted, false);
         installPermStatus = text(updater, "", 13, muted, false);
@@ -424,7 +403,19 @@ public class MainActivity extends Activity {
         automaticAppUpdate.setOnCheckedChangeListener((button, checked) ->
                 preferences.edit().putBoolean("auto_app_update", checked).apply());
         updater.addView(automaticAppUpdate, new LinearLayout.LayoutParams(-1, -2));
-        LinearLayout about = card(pages[3], "ABOUT THIS BUILD");
+        LinearLayout tools = card(pages[2], "SHIZUKU TOOLS");
+        action(tools, "Open Shizuku app", this::openShizuku);
+        action(tools, "Diagnose Shizuku handshake", this::diagnoseShizuku);
+        LinearLayout payloadCard = card(pages[2], "PAYLOAD FILE");
+        action(payloadCard, "Export downloaded payload", () -> {
+            if (selected == null) {
+                Toast.makeText(this, "Check for updates first", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            export();
+        });
+        text(payloadCard, "Saves the verified payload to a file you choose.", 13, muted, false);
+        LinearLayout options = card(pages[2], "OPTIONS");
         automaticKernel = new Switch(this);
         automaticKernel.setText("Load KernelSU after a successful root check");
         automaticKernel.setTextColor(ink);
@@ -432,24 +423,24 @@ public class MainActivity extends Activity {
         automaticKernel.setChecked(preferences.getBoolean("auto_kernel", false));
         automaticKernel.setOnCheckedChangeListener((button, checked) ->
                 preferences.edit().putBoolean("auto_kernel", checked).apply());
-        settings.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
-        text(settings, "After running IONSTACK, return to Home and check root. When enabled, a successful check also loads the matching module. It skips a module already loaded.", 13, muted, false);
-        text(about, "S22 Updater 4.6", 20, ink, true);
-        text(about, "System light/dark theme • Android 9+\nDownloads stay local until you install or export them. Existing v2 files are preserved.", 14, muted, false);
+        options.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
+        text(options, "When enabled, a successful root check also loads the matching module. It skips a module already loaded.", 13, muted, false);
+        LinearLayout about = card(pages[2], "ABOUT THIS BUILD");
+        text(about, "S22 Updater 4.7", 20, ink, true);
+        TextView identity = text(about, "com.bodo121.s22updater", 13, muted, false);
+        identity.setTextIsSelectable(true);
+        text(about, "System light/dark theme • Android 9+\nDownloads stay local until staged. Root is volatile: reboot clears it.", 14, muted, false);
     }
 
     private void resetFeed() {
         selected = null;
         payloads.clear();
-        renderChoices();
-        remote.setText("No payload selected");
-        local.setText("Local copy: not checked");
         status.setText("Feed changed — check for updates");
         refreshControls();
     }
 
     private void showPage(int page) {
-        pageIndex = Math.max(0, Math.min(3, page));
+        pageIndex = Math.max(0, Math.min(2, page));
         for (int i = 0; i < pages.length; i++) {
             ((View) pages[i].getParent()).setVisibility(i == pageIndex ? View.VISIBLE : View.GONE);
             tabs[i].setTextColor(i == pageIndex ? accent : muted);
@@ -472,6 +463,11 @@ public class MainActivity extends Activity {
             finally { post(() -> {
                 busy = false;
                 progress.setVisibility(View.GONE);
+                try {
+                    getWindow().clearFlags(
+                            android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                } catch (Exception ignored) {
+                }
                 refreshControls();
             }); }
         });
@@ -552,17 +548,109 @@ public class MainActivity extends Activity {
         feedInput.setEnabled(!busy);
         automaticKernel.setEnabled(!busy);
         automaticAppUpdate.setEnabled(!busy);
-        boolean hasFile = false;
-        try { hasFile = selected != null && localFile(selected).isFile(); } catch (Exception ignored) { }
-        boolean transport = rootGranted || shizukuGranted;
-        download.setEnabled(!busy && selected != null);
-        deploy.setEnabled(!busy && hasFile && rootGranted);
-        runExploit.setEnabled(!busy && hasFile && transport);
-        export.setEnabled(!busy && hasFile);
-        loadKernel.setEnabled(!busy && transport);
-        for (Button b : new Button[]{download, deploy, runExploit, export, loadKernel, checkAppUpdate})
-            b.setAlpha(b.isEnabled() ? 1f : .45f);
-        for (int i = 0; i < choices.getChildCount(); i++) choices.getChildAt(i).setEnabled(!busy);
+        updateFlow();
+    }
+
+    private boolean feedReady() {
+        return selected != null && !payloads.isEmpty();
+    }
+
+    private boolean payloadReady() {
+        if (!feedReady()) return false;
+        try {
+            File file = localFile(selected);
+            if (!file.isFile()) return false;
+            String hash = PayloadStore.hash(file);
+            return selected.sha.isEmpty() || hash.equalsIgnoreCase(selected.sha);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    private boolean transportReady() {
+        return rootGranted || shizukuGranted;
+    }
+
+    private boolean rooted() {
+        return rootGranted || exploitRooted;
+    }
+
+    /** One step at a time: feed → download → transport → run → ksu → done. */
+    private String flowStep() {
+        if (!feedReady()) return "feed";
+        if (!payloadReady()) return "download";
+        if (!transportReady()) return "transport";
+        if (!rooted()) return "run";
+        if (!ksuLoaded) return "ksu";
+        return "done";
+    }
+
+    private void primaryAction() {
+        if (busy) return;
+        switch (flowStep()) {
+            case "feed": checkFeed(); break;
+            case "download": download(); break;
+            case "transport": checkRoot(); break;
+            case "run": runExploit(); break;
+            case "ksu": {
+                final Shell.Transport transport = pickTransport();
+                if (transport == null) {
+                    status.setText("No privileged shell for KernelSU setup");
+                    log("KernelSU setup needs root or an authorized Shizuku shell.");
+                    showSheet("No privileged shell", "Load KernelSU needs root or an "
+                            + "authorized Shizuku shell.", "Authorize Shizuku",
+                            this::checkShizuku, "Close", null);
+                    return;
+                }
+                job("Setting up KernelSU…", () -> setupKernel(transport));
+                break;
+            }
+            default: openManager(); break;
+        }
+    }
+
+    private void markStep(TextView view, boolean done, boolean current, String label) {
+        view.setText((done ? "✓  " : current ? "●  " : "○  ") + label);
+        view.setTextColor(done || current ? ink : muted);
+        view.setTypeface(null, done || current ? Typeface.BOLD : Typeface.NORMAL);
+    }
+
+    private void updateFlow() {
+        if (flowAction == null) return;
+        String step = busy ? "" : flowStep();
+        switch (step) {
+            case "feed": flowAction.setText("Check for updates"); break;
+            case "download": flowAction.setText("Download payload"); break;
+            case "transport": flowAction.setText("Check root access"); break;
+            case "run": flowAction.setText("Run exploit"); break;
+            case "ksu": flowAction.setText("Load KernelSU"); break;
+            case "done": flowAction.setText("Open KernelSU Manager"); break;
+            default: flowAction.setText("Working…"); break;
+        }
+        flowHint.setText(ksuLoaded ? "KernelSU is active for this boot."
+                : rooted() ? "Root verified. Next: load KernelSU."
+                : transportReady() ? "Shell ready. Next: run the exploit."
+                : payloadReady() ? "Payload verified. Next: root access."
+                : feedReady() ? "Update info ready. Next: download."
+                : "One button walks the whole flow: update info, payload, exploit, KernelSU.");
+        markStep(stepFeed, feedReady(), "feed".equals(step),
+                "Update info" + (feedReady() ? " — " + selected.id : ""));
+        markStep(stepPayload, payloadReady(), "download".equals(step),
+                "Payload" + (payloadReady() ? " — verified" : ""));
+        markStep(stepRoot, rooted(), "transport".equals(step) || "run".equals(step),
+                "Root access" + (rooted() ? " — granted" : ""));
+        markStep(stepKsu, ksuLoaded, "ksu".equals(step),
+                "KernelSU" + (ksuLoaded ? " — loaded" : ""));
+        String device = Build.MODEL + " • Android " + Build.VERSION.RELEASE + "\n" + Build.DISPLAY;
+        if (feedReady()) device += "\nPayload: " + selected.id;
+        deviceInfo.setText(device);
+    }
+
+    private void runAppend(String line) {
+        runLog.append(line).append('\n');
+        if (runLog.length() > 6000) runLog.delete(0, runLog.length() - 6000);
+        String all = runLog.toString();
+        homeLog.setText(all.length() > 2500 ? "…" + all.substring(all.length() - 2499) : all);
     }
 
     private void checkFeed() {
@@ -583,34 +671,13 @@ public class MainActivity extends Activity {
             Payload preferred = loaded.get(0);
             for (Payload p : loaded) if (p.id.equals(saved)) preferred = p;
             final Payload chosen = preferred;
-            final String detail = describeLocal(chosen);
             post(() -> {
                 payloads.clear(); payloads.addAll(loaded); selected = chosen;
-                renderChoices(); showSelection(detail);
-                status.setText("Feed ready • " + loaded.size() + " payload(s)");
-                log("Feed loaded. Select your firmware before downloading.");
+                preferences.edit().putString("selected_payload", chosen.id).apply();
+                status.setText("Feed ready • " + chosen.name);
+                log("Feed loaded: " + chosen.id + " selected.");
             });
         });
-    }
-
-    private void renderChoices() {
-        choices.removeAllViews();
-        text(choices, "AVAILABLE PAYLOADS", 12, accent, true);
-        if (payloads.isEmpty()) text(choices, "Load the feed to choose a payload.", 14, muted, false);
-        for (Payload p : payloads) {
-            Button b = makeButton((p == selected ? "✓  " : "") + p.name + "\n" + p.id, false);
-            b.setTextSize(13);
-            b.setOnClickListener(v -> job("Checking local copy…", () -> {
-                String detail = describeLocal(p);
-                post(() -> {
-                    selected = p;
-                    preferences.edit().putString("selected_payload", p.id).apply();
-                    renderChoices(); showSelection(detail);
-                    status.setText("Payload selected");
-                });
-            }));
-            choices.addView(b, spaced());
-        }
     }
 
     private String describeLocal(Payload p) throws Exception {
@@ -620,12 +687,6 @@ public class MainActivity extends Activity {
         String comparison = p.sha.isEmpty() ? "Feed has no reference hash" :
                 (hash.equalsIgnoreCase(p.sha) ? "Matches feed SHA-256" : "Update available: hash differs");
         return "Local copy: " + file.length() + " bytes\nSHA-256: " + hash + "\n" + comparison;
-    }
-
-    private void showSelection(String detail) {
-        remote.setText(selected.name + "\n" + selected.size + " bytes\n" +
-                (selected.sha.isEmpty() ? "Feed SHA-256: not provided" : "Feed SHA-256: " + selected.sha));
-        local.setText(detail);
     }
 
     private void download() {
@@ -650,9 +711,9 @@ public class MainActivity extends Activity {
                 PayloadStore.replace(part, target);
                 String detail = describeLocal(p);
                 post(() -> {
-                    showSelection(detail);
-                    status.setText("Download saved");
+                    status.setText("Download saved and verified");
                     log("Saved " + p.id + (p.sha.isEmpty() ? "; size checked, no reference SHA-256 in feed." : "; SHA-256 verified."));
+                    log(detail.replace("\n", " | "));
                 });
             } finally { part.delete(); }
         });
@@ -671,8 +732,10 @@ public class MainActivity extends Activity {
             final String detail = result;
             post(() -> {
                 rootGranted = ok;
-                rootStatus.setText(ok ? "Access granted" : "Not granted / unavailable");
-                status.setText(ok ? "Root check passed" : "Root access not granted");
+                rootStatus.setText(ok ? "Root: granted" : "Root: not granted");
+                status.setText(ok ? "Root check passed" : "Root access not granted"
+                        + (isPackageInstalled("moe.shizuku.manager") && !shizukuGranted
+                        ? " — no su? Tap Authorize Shizuku below." : ""));
                 updateManager();
                 log("Root check: " + detail);
                 if (!ok) kernelStatus.setText("Kernel module: root access needed to check");
@@ -682,7 +745,9 @@ public class MainActivity extends Activity {
                 if (autoKernel) setupKernel(transport);
                 else {
                     String loaded = KernelSetup.status(transport, getCacheDir());
-                    post(() -> kernelStatus.setText("loaded".equals(loaded)
+                    final boolean present = "loaded".equals(loaded);
+                    if (present) ksuLoaded = true;
+                    post(() -> kernelStatus.setText(present
                             ? "Kernel module: loaded" : "Kernel module: not loaded"));
                 }
             }
@@ -708,8 +773,8 @@ public class MainActivity extends Activity {
                 post(() -> {
                     shizukuGranted = false;
                     shizukuStatus.setText(isPackageInstalled("moe.shizuku.manager")
-                            ? "Shizuku shell: service not connected"
-                            : "Shizuku shell: manager not installed");
+                            ? "Shizuku: service not connected"
+                            : "Shizuku: not installed");
                     status.setText(Shell.describeShizukuState());
                     log(Shell.describeShizukuState());
                     showSheet("Shizuku not connected", "Shizuku Manager is installed, but "
@@ -724,22 +789,22 @@ public class MainActivity extends Activity {
             if (Shell.shizukuGranted()) {
                 post(() -> {
                     shizukuGranted = true;
-                    shizukuStatus.setText("Shizuku shell: authorized");
+                    shizukuStatus.setText("Shizuku: authorized");
                     status.setText("Shizuku shell ready");
                     log("Shizuku shell ready");
                 });
                 return;
             }
             post(() -> {
-                shizukuStatus.setText("Shizuku shell: requesting authorization…");
+                shizukuStatus.setText("Shizuku: requesting authorization…");
                 log("Requesting Shizuku authorization — approve it in Shizuku/Manager.");
             });
             Shell.requestShizukuPermission(new Shell.PermissionCallback() {
                 @Override public void onResult(final boolean granted) {
                     post(() -> {
                         shizukuGranted = granted;
-                        shizukuStatus.setText(granted ? "Shizuku shell: authorized"
-                                : "Shizuku shell: authorization denied");
+                        shizukuStatus.setText(granted ? "Shizuku: authorized"
+                                : "Shizuku: denied");
                         status.setText(granted ? "Shizuku shell ready"
                                 : "Shizuku authorization denied");
                         log(granted ? "Shizuku authorized" : "Shizuku authorization denied");
@@ -777,6 +842,10 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
             String result = KernelSetup.load(Build.MODEL, transport, getCacheDir(), helper);
+            if (result.startsWith("KernelSU loaded") || result.startsWith("KernelSU is")) {
+                ksuLoaded = true;
+                updateManager();
+            }
             post(() -> { kernelStatus.setText(result); status.setText(result); log(result); });
         } catch (Exception e) {
             post(() -> kernelStatus.setText("KernelSU setup failed: " + e.getMessage()));
@@ -805,24 +874,6 @@ public class MainActivity extends Activity {
                 + "then return here.", "OK", null, null, null);
     }
 
-    private void deploy() {
-        final Payload p = selected;
-        if (p == null || !rootGranted) return;
-        job("Installing downloaded file…", () -> {
-            File file = localFile(p);
-            String hash = PayloadStore.verify(file, p.size, p.sha);
-            String destination = "/data/local/tmp/cve-2026-43499";
-            String temp = destination + ".s22-update";
-            String qTemp = Shell.quote(temp);
-            String command = "set -e; trap 'rm -f " + qTemp + "' EXIT; cp " + Shell.quote(file.getAbsolutePath())
-                    + " " + qTemp + "; chmod 755 " + qTemp
-                    + "; actual=$(sha256sum " + qTemp + "); [ \"${actual%% *}\" = " + Shell.quote(hash)
-                    + " ]; mv -f " + qTemp + " " + Shell.quote(destination);
-            Shell.runLocal(new String[]{"su", "-c", command}, getCacheDir(), 60000);
-            post(() -> { status.setText("File installed and verified"); log("Installed " + p.id + " to " + destination + ". Execution was not started."); });
-        });
-    }
-
     private void runExploit() {
         final Payload p = selected;
         if (p == null) return;
@@ -835,6 +886,7 @@ public class MainActivity extends Activity {
                     "Authorize Shizuku", this::checkShizuku, "Close", null);
             return;
         }
+        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         job("Running exploit via " + transport.name() + "…", () -> {
             File payloadFile = localFile(p);
             if (!payloadFile.isFile()) {
@@ -852,7 +904,7 @@ public class MainActivity extends Activity {
             if (transport instanceof Shell.ShizukuShell && !Shell.shizukuGranted()) {
                 post(() -> {
                     shizukuGranted = false;
-                    shizukuStatus.setText("Shizuku shell: authorization lost");
+                    shizukuStatus.setText("Shizuku: authorization lost");
                     showSheet("Shizuku not authorized", "Shizuku permission was revoked "
                             + "or never granted. Authorize this app in Shizuku, then run "
                             + "the exploit again.", "Authorize Shizuku", this::checkShizuku,
@@ -865,6 +917,7 @@ public class MainActivity extends Activity {
             post(() -> {
                 status.setText("Exploit running — keep the phone idle…");
                 log("Exploit started via " + transport.name() + ". Attempt budget 24, watchdog 15 min. Helper: " + helperPath);
+                runAppend("$ LD_PRELOAD=" + EXPLOIT_DEVICE_PATH + " sh  (attempts=24)");
             });
             String env = "EXPLOIT_ATTEMPTS=24 CVE43499_ROOT_HELPER=" + Shell.quote(helperPath);
             transport.run("rm -f " + Shell.quote(EXPLOIT_LOG_PATH), getCacheDir());
@@ -884,13 +937,16 @@ public class MainActivity extends Activity {
             post(() -> {
                 if (rooted) {
                     rootGranted = rootGranted || transport instanceof Shell.Su;
+                    exploitRooted = true;
                     status.setText("Exploit completed — root verified");
                     log("Exploit success marker seen; helper reports:\n" + probeText);
+                    runAppend("[exploit completed] " + probeText.replace("\n", " | "));
                     promptKernelSu(transport, helper);
                 } else {
                     status.setText("Exploit finished without root");
                     log("No success marker/root. Reboot for clean slabs, close apps, "
                             + "keep the screen unlocked and idle, then run again.");
+                    runAppend("[no root] reboot for clean slabs, then run again");
                 }
             });
         });
@@ -979,6 +1035,7 @@ public class MainActivity extends Activity {
                 post(() -> {
                     status.setText(live.isEmpty() ? "Exploit running…" : "Exploit: " + live);
                     log("exploit: " + snapshot.replace("\n", " | "));
+                    if (!live.isEmpty()) runAppend(live);
                 });
             }
             if (tail.contains("exploit completed")) return;

@@ -1,4 +1,4 @@
-# S22 Updater 4.2
+# S22 Updater 4.7
 
 A rebuilt control center for the personal IONSTACK-S22 / KernelSU phone project.
 
@@ -66,14 +66,15 @@ everything signed with the release key updates normally forever.
 
 ## Interface and workflows
 
-- **Home:** device information, explicit root check, Shizuku shell authorization,
-  correct KernelSU-Next Manager detection (`com.rifsxd.ksunext`), Shizuku
-  handshake diagnosis, and Manager launch.
-- **Updates:** schema-v3 feed, payload selection, download/install/run/export
-  actions, progress, local SHA-256 and feed hash comparison.
-- **Activity:** session diagnostics with a copy button; independent GitHub
+- **Home:** one status card with a single context-aware action (check feed →
+  download → root → run exploit → load KernelSU), a 4-step progress tracker,
+  compact root/Shizuku rows, KernelSU-Next Manager detection
+  (`com.rifsxd.ksunext`), device card, and live run log.
+- **Log:** session diagnostics with a copy button; independent GitHub
   changelog refresh, so a changelog failure cannot block the feed.
-- **Settings:** editable HTTPS feed URL, reset, automatic KernelSU setup option.
+- **Settings:** editable HTTPS feed URL, reset, Shizuku tools and handshake
+  diagnosis, payload export, app updates with install-permission status, and
+  automatic KernelSU setup option.
 - Rounded cards, touch feedback, launcher icon, system light/dark palettes.
 - Startup works without a network connection or root. Root is requested when
   the user taps **Check root access**, not during launch.
