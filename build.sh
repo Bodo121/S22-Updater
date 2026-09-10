@@ -9,6 +9,11 @@
 # Optional Android 9+ key-rotation lineage for one-time migration from an old
 # signing key:
 #   SIGN_LINEAGE, SIGN_ROTATION_MIN_SDK (default 28)
+# Optional safety net that fails the build unless the APK signer matches:
+#   SIGN_EXPECTED_CERT_SHA256 (permanent release cert, see README)
+#
+# The applicationId is frozen: com.bodo121.s22updater. Every release must use
+# the same package name and the same release key, or Android blocks updates.
 set -euo pipefail
 shopt -s globstar nullglob
 fail() { echo "build: ERROR: $*" >&2; exit 1; }
@@ -28,6 +33,9 @@ VENDOR="$OUT/vendor"
 
 VERSION_NAME="$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' "$HERE/AndroidManifest.xml" | head -n 1)"
 [ -n "$VERSION_NAME" ] || fail "cannot read versionName from manifest"
+PKG_NAME="$(sed -n 's/.* package="\([^"]*\)".*/\1/p' "$HERE/AndroidManifest.xml" | head -n 1)"
+[ "$PKG_NAME" = "com.bodo121.s22updater" ] \
+  || fail "package name is frozen (found '$PKG_NAME'); changing it breaks updates"
 APK_BASENAME="S22-Updater-v${VERSION_NAME%.0}"
 
 rm -rf "$OUT"
@@ -115,6 +123,12 @@ fi
 "$BT/apksigner" sign "${sign_args[@]}" \
   --out "$OUT/$APK_BASENAME.apk" "$OUT/aligned.apk" || fail "apksigner"
 "$BT/apksigner" verify --verbose --print-certs "$OUT/$APK_BASENAME.apk"
+if [ -n "${SIGN_EXPECTED_CERT_SHA256:-}" ]; then
+  "$BT/apksigner" verify --print-certs "$OUT/$APK_BASENAME.apk" 2>/dev/null \
+    | grep -qi "$SIGN_EXPECTED_CERT_SHA256" \
+    || fail "signer does not match SIGN_EXPECTED_CERT_SHA256 (wrong keystore?)"
+  echo "build: signer matches expected release certificate"
+fi
 "$BT/zipalign" -c 4 "$OUT/$APK_BASENAME.apk"
 ls -lh "$OUT/$APK_BASENAME.apk"
 echo "build: DONE -> $OUT/$APK_BASENAME.apk"

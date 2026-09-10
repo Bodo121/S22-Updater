@@ -47,6 +47,23 @@ Without them the release is signed with a throwaway key (fresh installs only).
 With them, `signing-lineage.bin` is included automatically so Android 9+ can
 accept the release key as the successor to the old local debug key.
 
+### Permanent app identity
+
+These values are frozen — changing any of them breaks in-place updates for
+every installed app:
+
+| Item | Value |
+| --- | --- |
+| Package name | `com.bodo121.s22updater` (`build.sh` fails otherwise) |
+| Release cert SHA-256 | `8588a91199d914eb638776a6144705c3b1db24f0ec90472cd963aa25237ffeb5` |
+| Keystore | `release.keystore` (git-ignored — keep a backup outside the repo) |
+| Rotation proof | `signing-lineage.bin` (committed) |
+
+Set `SIGN_EXPECTED_CERT_SHA256=8588a911…` (full digest above) when building a
+release: the build fails instead of shipping a wrong-key APK. The v3 signing
+key is lost, so v3 installs need the app's one-time "Uninstall old app" flow;
+everything signed with the release key updates normally forever.
+
 ## Interface and workflows
 
 - **Home:** device information, explicit root check, Shizuku shell authorization,

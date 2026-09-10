@@ -1,5 +1,22 @@
 # Changelog
 
+## 4.6
+
+### Fixed
+- Load KernelSU over Shizuku now streams the module over stdin instead of
+  `cp` from app-private storage, which the shell user cannot read.
+- App-update permission is shown in Settings, checked before downloading,
+  and re-checked on resume — no more mid-update surprises.
+- Exploit progress shows the latest live log line on the status view, like
+  watching adb output.
+- Package-conflict sheet now offers one-tap "Uninstall old app" for lost-key
+  (v3) installs instead of a dead end.
+
+### Changed
+- Frozen app identity: package `com.bodo121.s22updater` is enforced by the
+  build, and `SIGN_EXPECTED_CERT_SHA256` fails a release built with the wrong
+  key, so one signature serves all future updates.
+
 ## 4.5
 
 ### Fixed

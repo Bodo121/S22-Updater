@@ -29,7 +29,7 @@ public class MainActivity extends Activity {
     private final LinearLayout[] pages = new LinearLayout[4];
     private final Button[] tabs = new Button[4];
     private TextView status, local, remote, rootStatus, shizukuStatus, managerStatus,
-            kernelStatus, activityLog, changelog, appUpdateStatus;
+            kernelStatus, activityLog, changelog, appUpdateStatus, installPermStatus;
     private ProgressBar progress;
     private LinearLayout choices;
     private EditText feedInput;
@@ -102,7 +102,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(22), dp(18), dp(22), dp(12));
         text(header, "S22 / CONTROL CENTER", 12, accent, true);
         text(header, "Your device. Your updates.", 25, ink, true);
-        text(header, "IONSTACK • Version 4.5", 12, muted, false);
+        text(header, "IONSTACK • Version 4.6", 12, muted, false);
         shell.addView(header);
         FrameLayout content = new FrameLayout(this);
         shell.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -143,6 +143,16 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         pollShizuku();
+        refreshInstallPermission();
+    }
+
+    /** Shows whether Android currently lets this app install APK updates. */
+    private void refreshInstallPermission() {
+        if (installPermStatus == null) return;
+        boolean allowed = AppUpdate.canRequestPackageInstalls(this);
+        installPermStatus.setText(allowed ? "Install permission: granted — updates can install"
+                : "Install permission: MISSING — tap 'Allow app installs' below");
+        installPermStatus.setTextColor(allowed ? muted : 0xFFB00020);
     }
 
     /** Notices the moment Shizuku delivers (or loses) its binder, even across restarts. */
@@ -399,6 +409,12 @@ public class MainActivity extends Activity {
         LinearLayout updater = card(pages[3], "APP UPDATES");
         appUpdateStatus = text(updater, "S22 Updater " + AppUpdate.installedName(this)
                 + " — app update status unknown", 14, muted, false);
+        installPermStatus = text(updater, "", 13, muted, false);
+        action(updater, "Allow app installs", () -> {
+            AppUpdate.openInstallPermission(MainActivity.this);
+            Toast.makeText(MainActivity.this, "Enable 'Allow from this source', then return",
+                    Toast.LENGTH_LONG).show();
+        });
         checkAppUpdate = action(updater, "Check for app updates", this::checkAppUpdate);
         automaticAppUpdate = new Switch(this);
         automaticAppUpdate.setText("Check for app updates at startup");
@@ -418,7 +434,7 @@ public class MainActivity extends Activity {
                 preferences.edit().putBoolean("auto_kernel", checked).apply());
         settings.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
         text(settings, "After running IONSTACK, return to Home and check root. When enabled, a successful check also loads the matching module. It skips a module already loaded.", 13, muted, false);
-        text(about, "S22 Updater 4.5", 20, ink, true);
+        text(about, "S22 Updater 4.6", 20, ink, true);
         text(about, "System light/dark theme • Android 9+\nDownloads stay local until you install or export them. Existing v2 files are preserved.", 14, muted, false);
     }
 
@@ -952,9 +968,16 @@ public class MainActivity extends Activity {
             if (!tail.equals(lastTail)) {
                 lastTail = tail;
                 lastProgress = System.currentTimeMillis();
-                final String snapshot = tail.length() > 600 ? tail.substring(tail.length() - 600) : tail;
+                final String snapshot = tail.length() > 1000 ? tail.substring(tail.length() - 1000) : tail;
+                String lastLine = "";
+                for (String line : snapshot.split("\n")) {
+                    String clean = line.replaceAll("\u001B\\[[0-?]*[ -/]*[@-~]", "").trim();
+                    if (!clean.isEmpty()) lastLine = clean;
+                }
+                if (lastLine.length() > 140) lastLine = "…" + lastLine.substring(lastLine.length() - 139);
+                final String live = lastLine;
                 post(() -> {
-                    status.setText("Exploit running…");
+                    status.setText(live.isEmpty() ? "Exploit running…" : "Exploit: " + live);
                     log("exploit: " + snapshot.replace("\n", " | "));
                 });
             }
@@ -1020,6 +1043,19 @@ public class MainActivity extends Activity {
                 });
                 return;
             }
+            if (!AppUpdate.canRequestPackageInstalls(this)) {
+                post(() -> {
+                    appUpdateStatus.setText("S22 Updater " + info.versionName
+                            + " available — install permission missing");
+                    showSheet("Allow app installs", "S22 Updater " + info.versionName
+                            + " is available, but Android blocks this app from installing "
+                            + "APKs right now. Enable 'Allow from this source' first — "
+                            + "nothing was downloaded yet.",
+                            "Open setting", () -> AppUpdate.openInstallPermission(MainActivity.this),
+                            "Later", null);
+                });
+                return;
+            }
             post(() -> {
                 appUpdateStatus.setText("S22 Updater " + info.versionName + " available");
                 status.setText("Downloading app update…");
@@ -1045,14 +1081,6 @@ public class MainActivity extends Activity {
             final AppUpdate.SignatureReport signature = AppUpdate.checkInstallCompatibility(this, apk);
             if (!signature.compatible) {
                 post(() -> showUpdateConflict(info, signature));
-                return;
-            }
-            if (!AppUpdate.canRequestPackageInstalls(this)) {
-                post(() -> showSheet("Allow app installs", "Android blocks S22 Updater "
-                        + "from installing APK updates right now. Enable 'Allow from this "
-                        + "source', then return here and run Check for app updates again.",
-                        "Open setting", () -> AppUpdate.openInstallPermission(MainActivity.this),
-                        "Later", null));
                 return;
             }
             post(() -> showUpdateInstall(info, apk, signature));
@@ -1086,13 +1114,21 @@ public class MainActivity extends Activity {
                 + "update APK are signed by incompatible certificates.\n\n"
                 + "Installed signer: " + shortCert(signature.installedCert) + "\n"
                 + "Update signer: " + shortCert(signature.updateCert) + "\n\n"
-                + "v4.2 includes Android 9+ key-rotation lineage from the old local "
-                + "debug key to the release key. If Android still says package conflict, "
-                + "your installed build used a different lost key. Uninstall S22 Updater "
-                + "once, then install v4.2 from Releases. After that, future updates will "
-                + "install normally.";
-        showSheet("Package conflict", body, "Open releases",
-                () -> AppUpdate.openReleases(MainActivity.this), "App info", this::openSelfInfo);
+                + "This one-time step applies only to builds signed with the lost v3 "
+                + "key: uninstall S22 Updater below, then install the current release "
+                + "fresh. The permanent release key (used since v4.2) updates normally "
+                + "after that — no more uninstalls.";
+        showSheet("Package conflict", body, "Uninstall old app", this::openUninstall,
+                "Open releases", () -> AppUpdate.openReleases(MainActivity.this));
+    }
+
+    private void openUninstall() {
+        try {
+            startActivity(new Intent(Intent.ACTION_DELETE,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (Exception e) {
+            openSelfInfo();
+        }
     }
 
     private String shortCert(String digest) {

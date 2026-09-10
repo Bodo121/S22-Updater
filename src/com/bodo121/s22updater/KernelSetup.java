@@ -39,9 +39,16 @@ final class KernelSetup {
             String qStaged = Shell.quote(staged);
             String qModule = Shell.quote(module.getAbsolutePath());
             String qDevice = Shell.quote(DEVICE_MODULE);
-            transport.run("set -e; cp " + qModule + " " + qStaged + "; chmod 644 " + qStaged
-                    + "; actual=$(sha256sum " + qStaged + "); [ \"${actual%% *}\" = '" + SHA + "' ]; mv -f "
-                    + qStaged + " " + qDevice, scratch);
+            if (transport instanceof Shell.Su) {
+                transport.run("set -e; cp " + qModule + " " + qStaged + "; chmod 644 " + qStaged,
+                        scratch);
+            } else {
+                // A Shizuku shell (uid 2000) cannot read this app's private
+                // files, so stream the bytes over stdin instead of cp.
+                transport.writeFile(module, staged, "644");
+            }
+            transport.run("set -e; actual=$(sha256sum " + qStaged + "); [ \"${actual%% *}\" = '" + SHA
+                    + "' ]; mv -f " + qStaged + " " + qDevice, scratch);
             String insmod;
             if (helperPath != null && !helperPath.isEmpty()) {
                 insmod = Shell.quote(helperPath) + " -c " + Shell.quote("insmod " + DEVICE_MODULE);
