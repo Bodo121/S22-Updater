@@ -1,0 +1,54 @@
+name: CI Build
+
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: CI Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+          accept-android-sdk-licenses: true
+
+      - name: Build APK
+        env:
+          BT: ${{ env.ANDROID_HOME }}/build-tools/34.0.0
+          PLATFORM: ${{ env.ANDROID_HOME }}/platforms/android-34/android.jar
+        run: bash build.sh
+
+      - name: Host tests
+        env:
+          BT: ${{ env.ANDROID_HOME }}/build-tools/34.0.0
+          PLATFORM: ${{ env.ANDROID_HOME }}/platforms/android-34/android.jar
+        run: bash tests/check.sh
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: s22-updater-ci
+          path: out/S22-Updater-v*.apk
+          if-no-files-found: error
+          retention-days: 14

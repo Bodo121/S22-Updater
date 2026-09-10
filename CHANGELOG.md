@@ -1,5 +1,33 @@
 # Changelog
 
+## 4.0
+
+### Added
+- In-app self-updates: Settings → Check for app updates reads the repo's
+  latest release (`app-update.json` + `SHA256SUMS`), verifies the APK hash and
+  hands it to the package installer. Optional startup check.
+- GitHub Actions: `ci.yml` (build + host tests on every push) and
+  `release.yml` (tag `vX.Y` matching the manifest → signed APK + SHA256SUMS +
+  app-update.json published as a GitHub release).
+- Run exploit: stages payload + root helper to `/data/local/tmp` and executes
+  with attempt budget, log watchdog and `exploit completed` detection.
+- Shizuku shell transport (vendored client 13.1.5, hand-written binder stubs):
+  full run/install flows work with no prior root once Shizuku is authorized.
+- Post-run prompt: after verified root, the app asks whether to install
+  KernelSU now.
+- Feed `helper` artifact support (optional per-payload root-helper download),
+  with fallback to an on-device helper staged by `deploy.sh`.
+
+### Changed
+- KernelSU loading prefers the root-helper manual-loader path with plain
+  `insmod` fallback, through root or Shizuku.
+- Build derives the APK filename from the manifest and accepts signing
+  overrides for repeatable release keys.
+
+### Verification
+- Build, signature/alignment checks and host regression tests passed locally.
+- On-device exploit, Shizuku and KernelSU flows still need phone testing.
+
 ## 3.0
 
 ### Fixed

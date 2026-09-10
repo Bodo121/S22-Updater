@@ -1,15 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.bodo121.s22updater"
-    android:versionCode="3"
-    android:versionName="3.0">
+    android:versionCode="4"
+    android:versionName="4.0">
 
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <queries>
         <package android:name="com.rifsxd.ksunext" />
         <package android:name="me.weishu.kernelsu" />
         <package android:name="me.tongfei.kerneldebug" />
+        <package android:name="moe.shizuku.manager" />
     </queries>
 
     <application
@@ -18,6 +20,21 @@
         android:icon="@drawable/ic_launcher"
         android:usesCleartextTraffic="false"
         android:allowBackup="false">
+        <meta-data
+            android:name="moe.shizuku.client.V3_SUPPORT"
+            android:value="true" />
+        <provider
+            android:name=".ApkProvider"
+            android:authorities="com.bodo121.s22updater.updates"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="com.bodo121.s22updater.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <activity
             android:name=".MainActivity"
             android:exported="true">

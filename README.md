@@ -1,27 +1,53 @@
-# S22 Updater 3.0
+# S22 Updater 4.0
 
 A rebuilt control center for the personal IONSTACK-S22 / KernelSU phone project.
 
 ## Download and install
 
-[**Download S22-Updater-v3.apk**](https://github.com/Bodo121/S22-Updater/raw/refs/heads/main/S22-Updater-v3.apk)
+Get the latest release (APK + SHA256SUMS + app-update.json) from
+[Releases](https://github.com/Bodo121/S22-Updater/releases/latest):
 
 ```sh
 sha256sum -c SHA256SUMS
-adb install -r S22-Updater-v3.apk
+adb install -r S22-Updater-v4.apk
 ```
 
-Download `SHA256SUMS` beside the APK to verify it. The published v3 APK uses the
-same signing certificate as v2. Android 9 or later is required.
+Android 9 or later is required.
 
-See [CHANGELOG.md](CHANGELOG.md) for the startup crash fix and overhaul details.
-The repository root contains the current APK; older builds remain in Git history.
+> Signing break from v3: v4 is signed with a new key (the v3 signing key was a
+> local-only file and is gone), so uninstall v3 before installing v4. From v4
+> on, in-app updates work as long as every release uses the same key — back up
+> your keystore and add it to the release workflow secrets (see below).
+
+## App updates
+
+Settings → **Check for app updates** (optionally at every startup). The app
+reads this repo's latest GitHub release, downloads the APK from the release's
+`app-update.json` manifest, verifies its SHA-256 against the release
+`SHA256SUMS`, then hands it to Android's package installer.
+
+Releases are built by
+[`.github/workflows/release.yml`](.github/workflows/release.yml): push a tag
+matching the manifest (`v4.0` for versionName `4.0`) and the workflow builds,
+signs, and publishes the APK + SHA256SUMS + app-update.json. `ci.yml` verifies
+every other push with a full build and the host tests.
+
+One-time setup for updatable releases — repository secrets:
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | base64 of the keystore that signed the installed app |
+| `SIGN_STORE_PASS` | keystore password |
+| `SIGN_KEY_PASS` | key password |
+| `SIGN_ALIAS` | key alias |
+
+Without them the release is signed with a throwaway key (fresh installs only).
 
 ## Interface and workflows
 
-- **Home:** device information, explicit root check, correct KernelSU-Next
-  Manager detection (`com.rifsxd.ksunext`) and Manager launch.
-- **Updates:** schema-v3 feed, payload selection, separate download/install/export
+- **Home:** device information, explicit root check, Shizuku shell authorization,
+  correct KernelSU-Next Manager detection (`com.rifsxd.ksunext`) and Manager launch.
+- **Updates:** schema-v3 feed, payload selection, download/install/run/export
   actions, progress, local SHA-256 and feed hash comparison.
 - **Activity:** session diagnostics with a copy button; independent GitHub
   changelog refresh, so a changelog failure cannot block the feed.
@@ -39,6 +65,28 @@ The repository root contains the current APK; older builds remain in Git history
    `/data/local/tmp/cve-2026-43499`, checks the copied SHA-256, then replaces
    the destination. Downloading alone is not reported as a device install.
 
+### Running the exploit
+
+**Run exploit** stages the downloaded payload (and the root helper) into
+`/data/local/tmp`, executes it with `EXPLOIT_ATTEMPTS=24`, streams the device
+log with stall/total watchdogs, and looks for the `exploit completed` marker.
+On success it verifies root through the helper and asks:
+
+> Exploit completed — install KernelSU now?
+
+It works through either privileged shell:
+
+- **Root** (`su`): grant this app root in Home first.
+- **Shizuku** (no root yet): install Shizuku, start it via wireless debugging,
+  then Home → Authorize Shizuku shell. The app stages and runs everything
+  through the Shizuku shell, exactly like `support/deploy.sh` over adb.
+
+The root helper (`cve-2026-43499-root`) must come from the feed's optional
+`helper: {url, size, sha256}` entry, or already be on the device from a
+`deploy.sh` run. Without either, Run stops with instructions instead of
+failing obscurely. Keep the phone idle with the screen on; on failure, reboot
+for clean slabs and run again.
+
 An incomplete, oversized, wrong-size, or hash-mismatched download does not
 replace the previous private copy. If the feed has no SHA-256, the UI says so:
 calculating a local hash alone does not verify it against a publisher hash.
@@ -49,10 +97,12 @@ automatically adopting the old shared staging file.
 
 ### KernelSU setup
 
-The Home action loads the exact `KSU-S22` module using an already-granted
-`su` session. It checks `SM-S901B`, the full GZD7 kernel release, the expected
-432728-byte module size and SHA-256. After `insmod`, it verifies
-`/sys/module/kernelsu`; an already-loaded module is skipped.
+The Home action loads the exact `KSU-S22` module through root or Shizuku. It
+checks `SM-S901B`, the full GZD7 kernel release, the expected 432728-byte
+module size and SHA-256. Loading prefers the IONSTACK root helper
+(`<helper> -c 'insmod …'`, the documented manual-loader path) with a plain
+`insmod` fallback. After loading, it verifies `/sys/module/kernelsu`; an
+already-loaded module is skipped.
 
 Enable **Load KernelSU after a successful root check** to perform that setup
 after checking root. After running IONSTACK, return to Home and tap the root
@@ -73,12 +123,19 @@ Needs JDK 17, Android build-tools 34 and `android-34/android.jar`.
 
 ```sh
 bash build.sh
-adb install -r out/S22-Updater-v3.apk
+adb install -r out/S22-Updater-v4.apk
 ```
 
-Override `JAVA_HOME`, `BT`, and `PLATFORM` for your installation. Version values
-come from the manifest. The existing local signing key is reused, so this APK
-can upgrade v2. Keep that key locally for future updates; it is git-ignored.
+Override `JAVA_HOME`, `BT`, and `PLATFORM` for your installation. The output
+filename follows the manifest version. `build.sh` downloads the pinned Shizuku
+client AARs from Maven Central and verifies their SHA-256, compiles the
+Shizuku binder stubs in `src/moe/shizuku/server/`, and dexes everything
+without Gradle.
+
+Signing: `SIGN_KEYSTORE`/`SIGN_STORE_PASS`/`SIGN_KEY_PASS`/`SIGN_ALIAS`
+override the default throwaway debug key. Reuse one keystore for every build
+you ship, or Android will refuse updates — back it up somewhere safe, it is
+git-ignored.
 
 ## Verification
 
@@ -113,10 +170,12 @@ adb logcat -b crash -d
 ```text
 AndroidManifest.xml   App identity, version and permissions
 build.sh              Build and sign using local Android tools
-src/                  UI, downloads, file storage, root and KernelSU setup
+src/                  UI, downloads, file storage, root/Shizuku shells, KernelSU setup
+src/moe/              Shizuku binder stubs (from Shizuku-API AIDL, Apache-2.0)
 res/                  Launcher icon and Android resources
 tests/                Host regression tests and Android smoke test
-S22-Updater-v3.apk     Current installable build
+.github/workflows/   CI build check + tagged release publisher
+S22-Updater-v3.apk     Previous installable build (v4 needs a fresh install: new key)
 SHA256SUMS            Published APK checksum
 CHANGELOG.md          Release notes
 ```

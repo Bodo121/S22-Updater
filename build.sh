@@ -3,6 +3,9 @@
 # Needs: JDK 17, Android build-tools (aapt/aapt2/d8/zipalign/apksigner),
 #        platform android.jar. Override via env:
 #   JAVA_HOME, BT (build-tools dir), PLATFORM (android.jar)
+# Optional signing overrides (release builds should reuse one keystore so
+# updates install cleanly over previous versions):
+#   SIGN_KEYSTORE, SIGN_STORE_PASS, SIGN_KEY_PASS, SIGN_ALIAS
 set -euo pipefail
 shopt -s globstar nullglob
 fail() { echo "build: ERROR: $*" >&2; exit 1; }
@@ -14,19 +17,47 @@ export PATH="$JAVA_HOME/bin:$PATH"
 BT="${BT:-$HOME/android-sdk/build-tools}"
 PLATFORM="${PLATFORM:-$HOME/android-sdk/android-34/android.jar}"
 OUT="$HERE/out"
+VENDOR="$OUT/vendor"
 
 [ -x "$JAVA_HOME/bin/javac" ] || fail "javac not found (JAVA_HOME=$JAVA_HOME)"
 [ -x "$BT/aapt2" ] || fail "aapt2 not found (BT=$BT)"
 [ -f "$PLATFORM" ] || fail "android.jar not found (PLATFORM=$PLATFORM)"
 
+VERSION_NAME="$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' "$HERE/AndroidManifest.xml" | head -n 1)"
+[ -n "$VERSION_NAME" ] || fail "cannot read versionName from manifest"
+APK_BASENAME="S22-Updater-v${VERSION_NAME%.0}"
+
 rm -rf "$OUT"
-mkdir -p "$OUT/compiled_res" "$OUT/classes" "$OUT/dex"
+mkdir -p "$OUT/compiled_res" "$OUT/classes" "$OUT/dex" "$VENDOR" "$VENDOR/shizuku"
+
+echo "build: [0/6] vendor Shizuku client libraries"
+SHIZUKU_VERSION="13.1.5"
+SHIZUKU_API_SHA="4def9bde498ef8626614c2fc5db9af4749c86f16f6c33e3f5658d35e70bab59b"
+SHIZUKU_PROVIDER_SHA="b0f18cd9812464ec171c53cac93a819fe411718a3965c311f01eb4de265381b3"
+fetch_lib() {
+  local name="$1"
+  local sha="$2"
+  local dest="$VENDOR/$name-$SHIZUKU_VERSION.aar"
+  if [ ! -f "$dest" ]; then
+    curl -sSL --max-time 120 -o "$dest" \
+      "https://repo1.maven.org/maven2/dev/rikka/shizuku/$name/$SHIZUKU_VERSION/$name-$SHIZUKU_VERSION.aar" \
+      || fail "download $name failed"
+  fi
+  echo "$sha  $dest" | sha256sum -c - || fail "$name checksum mismatch"
+}
+fetch_lib api "$SHIZUKU_API_SHA"
+fetch_lib provider "$SHIZUKU_PROVIDER_SHA"
+rm -rf "$VENDOR/shizuku"
+mkdir -p "$VENDOR/shizuku/api" "$VENDOR/shizuku/provider"
+(cd "$VENDOR/shizuku/api" && unzip -oq "$VENDOR/api-$SHIZUKU_VERSION.aar" classes.jar)
+(cd "$VENDOR/shizuku/provider" && unzip -oq "$VENDOR/provider-$SHIZUKU_VERSION.aar" classes.jar)
+SHIZUKU_CP="$VENDOR/shizuku/api/classes.jar:$VENDOR/shizuku/provider/classes.jar"
 
 sources=("$HERE"/src/**/*.java)
 [ "${#sources[@]}" -gt 0 ] || fail "no Java sources"
 echo "build: [1/6] javac"
 "$JAVA_HOME/bin/javac" --release 8 -nowarn \
-  -classpath "$PLATFORM" \
+  -classpath "$PLATFORM:$SHIZUKU_CP" \
   -d "$OUT/classes" \
   "${sources[@]}" || fail "javac failed"
 classes=("$OUT"/classes/**/*.class)
@@ -36,10 +67,14 @@ echo "build: [2/6] aapt2 compile"
 "$BT/aapt2" compile --dir "$HERE/res" -o "$OUT/compiled_res.zip" || fail "aapt2 compile"
 
 echo "build: [3/6] d8"
+mkdir -p "$VENDOR/shizuku-classes"
+(cd "$VENDOR/shizuku/api" && "$JAVA_HOME/bin/jar" xf classes.jar)
+(cd "$VENDOR/shizuku/provider" && "$JAVA_HOME/bin/jar" xf classes.jar)
+shizuku_classes=("$VENDOR"/shizuku/api/**/*.class "$VENDOR"/shizuku/provider/**/*.class)
 "$JAVA_HOME/bin/java" -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 \
   --lib "$PLATFORM" --min-api 28 \
   --output "$OUT/dex" \
-  "${classes[@]}" || fail "d8 failed"
+  "${classes[@]}" "${shizuku_classes[@]}" || fail "d8 failed"
 ls "$OUT/dex/classes.dex" >/dev/null || fail "classes.dex missing"
 
 echo "build: [4/6] aapt2 link"
@@ -55,15 +90,19 @@ cp "$OUT/unsigned.apk" "$OUT/app.apk"
 "$BT/zipalign" -f 4 "$OUT/app.apk" "$OUT/aligned.apk" || fail "zipalign"
 
 echo "build: [6/6] sign"
-KS="$HERE/debug.keystore"
+KS="${SIGN_KEYSTORE:-$HERE/debug.keystore}"
+STORE_PASS="${SIGN_STORE_PASS:-android}"
+KEY_PASS="${SIGN_KEY_PASS:-android}"
+KEY_ALIAS="${SIGN_ALIAS:-androiddebugkey}"
 if [ ! -f "$KS" ]; then
-  "$JAVA_HOME/bin/keytool" -genkeypair -keystore "$KS" -storepass android \
-    -keypass android -alias androiddebugkey -keyalg RSA -keysize 2048 \
+  [ "$KS" = "$HERE/debug.keystore" ] || fail "signing keystore not found: $KS"
+  "$JAVA_HOME/bin/keytool" -genkeypair -keystore "$KS" -storepass "$STORE_PASS" \
+    -keypass "$KEY_PASS" -alias "$KEY_ALIAS" -keyalg RSA -keysize 2048 \
     -validity 10950 -dname "CN=Android Debug,O=Android,C=US" || fail "keytool"
 fi
-"$BT/apksigner" sign --ks "$KS" --ks-pass pass:android --key-pass pass:android \
-  --out "$OUT/S22-Updater-v3.apk" "$OUT/aligned.apk" || fail "apksigner"
-"$BT/apksigner" verify --verbose --print-certs "$OUT/S22-Updater-v3.apk"
-"$BT/zipalign" -c 4 "$OUT/S22-Updater-v3.apk"
-ls -lh "$OUT/S22-Updater-v3.apk"
-echo "build: DONE -> $OUT/S22-Updater-v3.apk"
+"$BT/apksigner" sign --ks "$KS" --ks-pass "pass:$STORE_PASS" --key-pass "pass:$KEY_PASS" \
+  --out "$OUT/$APK_BASENAME.apk" "$OUT/aligned.apk" || fail "apksigner"
+"$BT/apksigner" verify --verbose --print-certs "$OUT/$APK_BASENAME.apk"
+"$BT/zipalign" -c 4 "$OUT/$APK_BASENAME.apk"
+ls -lh "$OUT/$APK_BASENAME.apk"
+echo "build: DONE -> $OUT/$APK_BASENAME.apk"

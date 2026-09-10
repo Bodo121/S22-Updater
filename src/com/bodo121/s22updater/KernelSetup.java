@@ -3,28 +3,61 @@ package com.bodo121.s22updater;
 import java.io.File;
 import java.io.IOException;
 
+/** Exact-build KernelSU late-load setup for SM-S901B / S901BXXSNGZD7. */
 final class KernelSetup {
     static final String RELEASE = "5.10.237-android12-9-31999025-abS901BXXSNGZD7";
     static final String URL = "https://raw.githubusercontent.com/Bodo121/KSU-S22/main/kernelsu-r0s-S901BXXSNGZD7-kdp.ko";
     static final String SHA = "bab4be3cbb4fe3eac47f71852a8980c226a004a85e4ebc146971576277a9b97d";
+    static final long SIZE = 432728;
+    static final String DEVICE_MODULE = "/data/local/tmp/kernelsu.ko";
 
-    static String status(File cache) throws Exception {
-        return RootShell.run("if [ -d /sys/module/kernelsu ]; then printf loaded; else printf absent; fi", cache);
+    static String status(Shell.Transport transport, File scratch) throws Exception {
+        return transport.run(
+                "if [ -d /sys/module/kernelsu ]; then printf loaded; else printf absent; fi", scratch);
     }
 
-    static String load(String model, File cache) throws Exception {
-        if ("loaded".equals(status(cache))) return "KernelSU is already loaded for this boot";
-        String release = RootShell.run("uname -r", cache);
+    /**
+     * Loads the module through the given transport. Prefers the IONSTACK root
+     * helper when a helper path is known (the KDP module needs the manual
+     * loader); falls back to a plain insmod.
+     */
+    static String load(String model, Shell.Transport transport, File scratch, String helperPath)
+            throws Exception {
+        if ("loaded".equals(status(transport, scratch)))
+            return "KernelSU is already loaded for this boot";
+        String release = transport.run("uname -r", scratch);
         if (!"SM-S901B".equals(model) || !RELEASE.equals(release))
-            throw new IOException("This KernelSU module requires SM-S901B / S901BXXSNGZD7. Detected: " + model + " / " + release);
-        File module = File.createTempFile("kernelsu-", ".ko", cache);
+            throw new IOException("This KernelSU module requires SM-S901B / S901BXXSNGZD7. Detected: "
+                    + model + " / " + release);
+        File module = File.createTempFile("kernelsu-", ".ko", scratch);
         try {
             Network.download(URL, module, null);
-            PayloadStore.verify(module, 432728, SHA);
-            if (Thread.currentThread().isInterrupted()) throw new java.io.InterruptedIOException("Cancelled");
-            RootShell.run("insmod " + RootShell.quote(module.getAbsolutePath())
-                    + " && test -d /sys/module/kernelsu", cache);
+            PayloadStore.verify(module, SIZE, SHA);
+            if (Thread.currentThread().isInterrupted())
+                throw new java.io.InterruptedIOException("Cancelled");
+            String staged = DEVICE_MODULE + ".s22-stage";
+            String qStaged = Shell.quote(staged);
+            String qModule = Shell.quote(module.getAbsolutePath());
+            String qDevice = Shell.quote(DEVICE_MODULE);
+            transport.run("set -e; cp " + qModule + " " + qStaged + "; chmod 644 " + qStaged
+                    + "; actual=$(sha256sum " + qStaged + "); [ \"${actual%% *}\" = '" + SHA + "' ]; mv -f "
+                    + qStaged + " " + qDevice, scratch);
+            String insmod;
+            if (helperPath != null && !helperPath.isEmpty()) {
+                insmod = Shell.quote(helperPath) + " -c " + Shell.quote("insmod " + DEVICE_MODULE);
+            } else {
+                insmod = "insmod " + Shell.quote(DEVICE_MODULE);
+            }
+            try {
+                transport.run(insmod + " && test -d /sys/module/kernelsu", scratch);
+            } catch (Exception first) {
+                if (helperPath == null || helperPath.isEmpty()) throw first;
+                transport.run("insmod " + Shell.quote(DEVICE_MODULE)
+                        + " && test -d /sys/module/kernelsu", scratch);
+            }
             return "KernelSU loaded and verified for this boot";
-        } finally { module.delete(); }
+        } finally {
+            module.delete();
+        }
     }
 }

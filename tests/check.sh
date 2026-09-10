@@ -22,7 +22,7 @@ java -cp "$BT/lib/d8.jar" com.android.tools.r8.D8 --lib "$PLATFORM" --min-api 28
 "$BT/apksigner" verify "$OUT/S22-SmokeTest.apk"
 if [[ "${1:-}" == "--device" ]]; then
     adb get-state
-    adb install -r "$HERE/out/S22-Updater-v3.apk"
+    adb install -r "$HERE"/out/S22-Updater-v*.apk
     adb install -r "$OUT/S22-SmokeTest.apk"
     result="$(adb shell am instrument -w com.bodo121.s22updater.tests/.SmokeTest)"
     printf '%s\n' "$result"

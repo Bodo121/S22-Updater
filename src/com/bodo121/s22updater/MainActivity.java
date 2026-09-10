@@ -28,22 +28,29 @@ public class MainActivity extends Activity {
     private final List<Payload> payloads = new ArrayList<>();
     private final LinearLayout[] pages = new LinearLayout[4];
     private final Button[] tabs = new Button[4];
-    private TextView status, local, remote, rootStatus, managerStatus, kernelStatus, activityLog, changelog;
+    private TextView status, local, remote, rootStatus, shizukuStatus, managerStatus,
+            kernelStatus, activityLog, changelog, appUpdateStatus;
     private ProgressBar progress;
     private LinearLayout choices;
     private EditText feedInput;
-    private Button download, deploy, export, loadKernel;
-    private Switch automaticKernel;
+    private Button download, deploy, runExploit, export, loadKernel, checkAppUpdate;
+    private Switch automaticKernel, automaticAppUpdate;
     private SharedPreferences preferences;
     private Payload selected;
     private File exportFile;
-    private boolean busy, rootGranted;
+    private boolean busy, rootGranted, shizukuGranted;
     private volatile boolean closed;
     private int bg, surface, ink, muted, accent, border, pageIndex;
+
+    static final String HELPER_DEVICE_PATH = "/data/local/tmp/cve-2026-43499-root";
+    static final String EXPLOIT_DEVICE_PATH = "/data/local/tmp/cve-2026-43499";
+    static final String EXPLOIT_LOG_PATH = "/data/local/tmp/cve-exploit.log";
 
     private static final class Payload {
         final String id, name, url, sha;
         final long size;
+        final String helperUrl, helperSha;
+        final long helperSize;
         Payload(JSONObject item) throws Exception {
             id = item.getString("payloadId");
             if (!id.matches("[A-Za-z0-9._-]{1,120}")) throw new IOException("Invalid payload ID");
@@ -54,6 +61,20 @@ public class MainActivity extends Activity {
             sha = artifact.optString("sha256", "").trim();
             if (size < 0 || size > 64 * 1024 * 1024) throw new IOException("Invalid artifact size");
             if (!sha.isEmpty() && !sha.matches("[a-fA-F0-9]{64}")) throw new IOException("Invalid SHA-256");
+            JSONObject helper = item.optJSONObject("helper");
+            if (helper != null) {
+                helperUrl = Network.validate(helper.getString("url")).toString();
+                helperSize = helper.optLong("size", 0);
+                helperSha = helper.optString("sha256", "").trim();
+                if (helperSize < 0 || helperSize > 64 * 1024 * 1024)
+                    throw new IOException("Invalid helper size");
+                if (!helperSha.isEmpty() && !helperSha.matches("[a-fA-F0-9]{64}"))
+                    throw new IOException("Invalid helper SHA-256");
+            } else {
+                helperUrl = "";
+                helperSize = 0;
+                helperSha = "";
+            }
         }
     }
 
@@ -81,7 +102,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(22), dp(18), dp(22), dp(12));
         text(header, "S22 / CONTROL CENTER", 12, accent, true);
         text(header, "Your device. Your updates.", 25, ink, true);
-        text(header, "IONSTACK • Version 3.0", 12, muted, false);
+        text(header, "IONSTACK • Version 4.0", 12, muted, false);
         shell.addView(header);
         FrameLayout content = new FrameLayout(this);
         shell.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -115,6 +136,7 @@ public class MainActivity extends Activity {
         updateManager();
         refreshControls();
         log("Ready. Feed checks and root requests run when you tap their buttons.");
+        if (preferences.getBoolean("auto_app_update", false)) checkAppUpdate();
     }
 
     private void buildHome() {
@@ -125,11 +147,23 @@ public class MainActivity extends Activity {
         rootStatus = text(root, "Not checked", 20, ink, true);
         text(root, "Check whether this app has superuser access. Approve the request in your root manager.", 14, muted, false);
         action(root, "Check root access", this::checkRoot);
+        shizukuStatus = text(root, "Shizuku shell: not checked", 14, muted, false);
+        action(root, "Authorize Shizuku shell", this::checkShizuku);
+        text(root, "Without root, the exploit can still run through a Shizuku shell "
+                + "(install Shizuku, start it via wireless debugging, then authorize this app).", 13, muted, false);
         LinearLayout manager = card(pages[0], "KERNELSU");
         managerStatus = text(manager, "Checking manager…", 18, ink, true);
         kernelStatus = text(manager, "Kernel module: check root first", 14, muted, false);
         action(manager, "Open KernelSU Manager", this::openManager);
-        loadKernel = action(manager, "Load matching KernelSU module", () -> job("Setting up KernelSU…", this::setupKernel));
+        loadKernel = action(manager, "Load matching KernelSU module", () -> {
+            final Shell.Transport transport = pickTransport();
+            if (transport == null) {
+                status.setText("No privileged shell for KernelSU setup");
+                log("KernelSU setup needs root or an authorized Shizuku shell.");
+                return;
+            }
+            job("Setting up KernelSU…", () -> setupKernel(transport));
+        });
         text(manager, "Late-load setup uses your SM-S901B / S901BXXSNGZD7 module, checks its SHA-256 and confirms /sys/module/kernelsu. Module state lasts for the current boot.", 13, muted, false);
     }
 
@@ -150,8 +184,11 @@ public class MainActivity extends Activity {
         local.setTextIsSelectable(true);
         download = action(detail, "Download update", this::download);
         deploy = action(detail, "Install downloaded file with root", this::deploy);
+        runExploit = action(detail, "Run exploit", this::runExploit);
         export = action(detail, "Export downloaded file", this::export);
-        text(detail, "Download saves a private copy. Root install copies it to /data/local/tmp/cve-2026-43499 and verifies its hash. It does not run the exploit or activate KernelSU.", 13, muted, false);
+        text(detail, "Download saves a private copy. Root install copies it to /data/local/tmp/cve-2026-43499 "
+                + "and verifies its hash. Run exploit executes the staged payload through root or a Shizuku "
+                + "shell, then asks whether to install KernelSU.", 13, muted, false);
     }
 
     private void buildActivity() {
@@ -197,6 +234,18 @@ public class MainActivity extends Activity {
             resetFeed();
             log("Default feed restored.");
         });
+        LinearLayout updater = card(pages[3], "APP UPDATES");
+        appUpdateStatus = text(updater, "S22 Updater " + AppUpdate.installedName(this)
+                + " — app update status unknown", 14, muted, false);
+        checkAppUpdate = action(updater, "Check for app updates", this::checkAppUpdate);
+        automaticAppUpdate = new Switch(this);
+        automaticAppUpdate.setText("Check for app updates at startup");
+        automaticAppUpdate.setTextColor(ink);
+        automaticAppUpdate.setPadding(0, dp(12), 0, dp(12));
+        automaticAppUpdate.setChecked(preferences.getBoolean("auto_app_update", false));
+        automaticAppUpdate.setOnCheckedChangeListener((button, checked) ->
+                preferences.edit().putBoolean("auto_app_update", checked).apply());
+        updater.addView(automaticAppUpdate, new LinearLayout.LayoutParams(-1, -2));
         LinearLayout about = card(pages[3], "ABOUT THIS BUILD");
         automaticKernel = new Switch(this);
         automaticKernel.setText("Load KernelSU after a successful root check");
@@ -207,7 +256,7 @@ public class MainActivity extends Activity {
                 preferences.edit().putBoolean("auto_kernel", checked).apply());
         settings.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
         text(settings, "After running IONSTACK, return to Home and check root. When enabled, a successful check also loads the matching module. It skips a module already loaded.", 13, muted, false);
-        text(about, "S22 Updater 3.0", 20, ink, true);
+        text(about, "S22 Updater 4.0", 20, ink, true);
         text(about, "System light/dark theme • Android 9+\nDownloads stay local until you install or export them. Existing v2 files are preserved.", 14, muted, false);
     }
 
@@ -273,13 +322,17 @@ public class MainActivity extends Activity {
         for (Button button : actions) { button.setEnabled(!busy); button.setAlpha(busy ? .5f : 1f); }
         feedInput.setEnabled(!busy);
         automaticKernel.setEnabled(!busy);
+        automaticAppUpdate.setEnabled(!busy);
         boolean hasFile = false;
         try { hasFile = selected != null && localFile(selected).isFile(); } catch (Exception ignored) { }
+        boolean transport = rootGranted || shizukuGranted;
         download.setEnabled(!busy && selected != null);
         deploy.setEnabled(!busy && hasFile && rootGranted);
+        runExploit.setEnabled(!busy && hasFile && transport);
         export.setEnabled(!busy && hasFile);
-        loadKernel.setEnabled(!busy && rootGranted);
-        for (Button b : new Button[]{download, deploy, export, loadKernel}) b.setAlpha(b.isEnabled() ? 1f : .45f);
+        loadKernel.setEnabled(!busy && transport);
+        for (Button b : new Button[]{download, deploy, runExploit, export, loadKernel, checkAppUpdate})
+            b.setAlpha(b.isEnabled() ? 1f : .45f);
         for (int i = 0; i < choices.getChildCount(); i++) choices.getChildAt(i).setEnabled(!busy);
     }
 
@@ -382,7 +435,7 @@ public class MainActivity extends Activity {
             boolean granted = false;
             String result;
             try {
-                result = RootShell.run("id", getCacheDir());
+                result = Shell.runLocal(new String[]{"su", "-c", "id"}, getCacheDir(), 15000);
                 granted = result.matches("(?s).*\\buid=0\\b.*");
             } catch (Exception e) { result = e.getMessage(); }
             final boolean ok = granted;
@@ -396,18 +449,75 @@ public class MainActivity extends Activity {
                 if (!ok) kernelStatus.setText("Kernel module: root access needed to check");
             });
             if (ok) {
-                if (autoKernel) setupKernel();
+                Shell.Transport transport = new Shell.Su();
+                if (autoKernel) setupKernel(transport);
                 else {
-                    String loaded = KernelSetup.status(getCacheDir());
-                    post(() -> kernelStatus.setText("loaded".equals(loaded) ? "Kernel module: loaded" : "Kernel module: not loaded"));
+                    String loaded = KernelSetup.status(transport, getCacheDir());
+                    post(() -> kernelStatus.setText("loaded".equals(loaded)
+                            ? "Kernel module: loaded" : "Kernel module: not loaded"));
                 }
             }
         });
     }
 
-    private void setupKernel() throws Exception {
+    private void checkShizuku() {
+        job("Checking Shizuku shell…", () -> {
+            if (!Shell.shizukuRunning()) {
+                post(() -> {
+                    shizukuGranted = false;
+                    shizukuStatus.setText("Shizuku shell: not running");
+                    status.setText(Shell.describeShizukuState());
+                    log(Shell.describeShizukuState());
+                });
+                return;
+            }
+            if (Shell.shizukuGranted()) {
+                post(() -> {
+                    shizukuGranted = true;
+                    shizukuStatus.setText("Shizuku shell: authorized");
+                    status.setText("Shizuku shell ready");
+                    log("Shizuku shell ready");
+                });
+                return;
+            }
+            post(() -> {
+                shizukuStatus.setText("Shizuku shell: requesting authorization…");
+                log("Requesting Shizuku authorization — approve it in Shizuku/Manager.");
+            });
+            Shell.requestShizukuPermission(new Shell.PermissionCallback() {
+                @Override public void onResult(final boolean granted) {
+                    post(() -> {
+                        shizukuGranted = granted;
+                        shizukuStatus.setText(granted ? "Shizuku shell: authorized"
+                                : "Shizuku shell: authorization denied");
+                        status.setText(granted ? "Shizuku shell ready"
+                                : "Shizuku authorization denied");
+                        log(granted ? "Shizuku authorized" : "Shizuku authorization denied");
+                    });
+                }
+            });
+        });
+    }
+
+    /** Prefers an authorized su session; falls back to a Shizuku shell. */
+    private Shell.Transport pickTransport() {
+        if (rootGranted) return new Shell.Su();
+        if (shizukuGranted) {
+            moe.shizuku.server.IShizukuService service = Shell.shizukuService();
+            if (service != null) return new Shell.ShizukuShell(service);
+        }
+        return null;
+    }
+
+    private void setupKernel(Shell.Transport transport) throws Exception {
         try {
-            String result = KernelSetup.load(Build.MODEL, getCacheDir());
+            String helper = null;
+            try {
+                transport.run("test -x " + Shell.quote(HELPER_DEVICE_PATH), getCacheDir());
+                helper = HELPER_DEVICE_PATH;
+            } catch (Exception ignored) {
+            }
+            String result = KernelSetup.load(Build.MODEL, transport, getCacheDir(), helper);
             post(() -> { kernelStatus.setText(result); status.setText(result); log(result); });
         } catch (Exception e) {
             post(() -> kernelStatus.setText("KernelSU setup failed: " + e.getMessage()));
@@ -445,13 +555,232 @@ public class MainActivity extends Activity {
             String hash = PayloadStore.verify(file, p.size, p.sha);
             String destination = "/data/local/tmp/cve-2026-43499";
             String temp = destination + ".s22-update";
-            String qTemp = RootShell.quote(temp);
-            String command = "set -e; trap 'rm -f " + qTemp + "' EXIT; cp " + RootShell.quote(file.getAbsolutePath())
+            String qTemp = Shell.quote(temp);
+            String command = "set -e; trap 'rm -f " + qTemp + "' EXIT; cp " + Shell.quote(file.getAbsolutePath())
                     + " " + qTemp + "; chmod 755 " + qTemp
-                    + "; actual=$(sha256sum " + qTemp + "); [ \"${actual%% *}\" = " + RootShell.quote(hash)
-                    + " ]; mv -f " + qTemp + " " + RootShell.quote(destination);
-            RootShell.run(command, getCacheDir());
+                    + "; actual=$(sha256sum " + qTemp + "); [ \"${actual%% *}\" = " + Shell.quote(hash)
+                    + " ]; mv -f " + qTemp + " " + Shell.quote(destination);
+            Shell.runLocal(new String[]{"su", "-c", command}, getCacheDir(), 60000);
             post(() -> { status.setText("File installed and verified"); log("Installed " + p.id + " to " + destination + ". Execution was not started."); });
+        });
+    }
+
+    private void runExploit() {
+        final Payload p = selected;
+        if (p == null) return;
+        final Shell.Transport transport = pickTransport();
+        if (transport == null) {
+            new AlertDialog.Builder(this).setTitle("No privileged shell")
+                    .setMessage("Running the exploit needs root or a Shizuku shell.\n\n"
+                            + Shell.describeShizukuState() + "\n\n"
+                            + "Grant root in Home, or authorize Shizuku and try again. "
+                            + "Without either, use support/deploy.sh from a computer.")
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        job("Running exploit via " + transport.name() + "…", () -> {
+            File payloadFile = localFile(p);
+            if (!payloadFile.isFile()) {
+                post(() -> status.setText("Downloading payload first…"));
+                File part = File.createTempFile("download-", ".part", getFilesDir());
+                try {
+                    Network.download(p.url, part, null);
+                    PayloadStore.verify(part, p.size, p.sha);
+                    PayloadStore.replace(part, payloadFile);
+                } finally {
+                    part.delete();
+                }
+            }
+            String hash = PayloadStore.verify(payloadFile, p.size, p.sha);
+            String helperPath = resolveHelper(p, transport);
+            stageExecutable(transport, payloadFile, EXPLOIT_DEVICE_PATH, hash);
+            post(() -> {
+                status.setText("Exploit running — keep the phone idle…");
+                log("Exploit started via " + transport.name() + ". Attempt budget 24, watchdog 15 min.");
+            });
+            String env = "EXPLOIT_ATTEMPTS=24";
+            transport.run("rm -f " + Shell.quote(EXPLOIT_LOG_PATH), getCacheDir());
+            transport.run("set -e; " + env + " LD_PRELOAD=" + Shell.quote(EXPLOIT_DEVICE_PATH)
+                    + " /system/bin/sh > " + Shell.quote(EXPLOIT_LOG_PATH)
+                    + " 2>&1 & echo started", getCacheDir());
+            watchExploitLog(transport);
+            final String helper = helperPath;
+            String probe;
+            try {
+                probe = transport.run(Shell.quote(helper) + " -c 'id; getenforce'", getCacheDir());
+            } catch (Exception e) {
+                probe = "";
+            }
+            final boolean rooted = probe.contains("uid=0");
+            final String probeText = probe;
+            post(() -> {
+                if (rooted) {
+                    rootGranted = rootGranted || transport instanceof Shell.Su;
+                    status.setText("Exploit completed — root verified");
+                    log("Exploit success marker seen; helper reports:\n" + probeText);
+                    promptKernelSu(transport, helper);
+                } else {
+                    status.setText("Exploit finished without root");
+                    log("No success marker/root. Reboot for clean slabs, close apps, "
+                            + "keep the screen unlocked and idle, then run again.");
+                }
+            });
+        });
+    }
+
+    /** Returns a device path for the root helper, staging it when the feed provides one. */
+    private String resolveHelper(Payload p, Shell.Transport transport) throws Exception {
+        if (p.helperUrl != null && !p.helperUrl.isEmpty()) {
+            File cached = new File(getCacheDir(), "helper-" + p.id);
+            boolean ok = false;
+            try {
+                if (cached.isFile()) PayloadStore.verify(cached, p.helperSize, p.helperSha);
+                else {
+                    File part = File.createTempFile("helper-", ".part", getCacheDir());
+                    try {
+                        Network.download(p.helperUrl, part, null);
+                        PayloadStore.verify(part, p.helperSize, p.helperSha);
+                        PayloadStore.replace(part, cached);
+                    } finally {
+                        part.delete();
+                    }
+                }
+                ok = true;
+            } catch (Exception e) {
+                log("Helper download failed: " + e.getMessage());
+            }
+            if (ok) {
+                stageExecutable(transport, cached, HELPER_DEVICE_PATH,
+                        PayloadStore.hash(cached));
+                return HELPER_DEVICE_PATH;
+            }
+        }
+        try {
+            transport.run("test -x " + Shell.quote(HELPER_DEVICE_PATH), getCacheDir());
+            return HELPER_DEVICE_PATH;
+        } catch (Exception e) {
+            throw new IOException("No root helper: the feed has no helper artifact and "
+                    + HELPER_DEVICE_PATH + " is missing. Stage it with support/deploy.sh first.");
+        }
+    }
+
+    private void stageExecutable(Shell.Transport transport, File source, String dest, String hash)
+            throws Exception {
+        String temp = dest + ".s22-stage";
+        String qTemp = Shell.quote(temp);
+        if (transport instanceof Shell.Su) {
+            transport.run("set -e; trap 'rm -f " + qTemp + "' EXIT; cp "
+                    + Shell.quote(source.getAbsolutePath()) + " " + qTemp + "; chmod 755 " + qTemp
+                    + "; actual=$(sha256sum " + qTemp + "); [ \"${actual%% *}\" = '" + hash + "' ]; mv -f "
+                    + qTemp + " " + Shell.quote(dest), getCacheDir());
+        } else {
+            transport.writeFile(source, temp, "755");
+            transport.run("set -e; actual=$(sha256sum " + qTemp + "); "
+                    + "[ \"${actual%% *}\" = '" + hash + "' ]; mv -f " + qTemp + " "
+                    + Shell.quote(dest), getCacheDir());
+        }
+    }
+
+    /** Polls the on-device exploit log for the success marker with stall/total watchdogs. */
+    private void watchExploitLog(Shell.Transport transport) throws Exception {
+        final long totalMs = 15 * 60 * 1000;
+        final long stallMs = 120 * 1000;
+        long start = System.currentTimeMillis();
+        long lastProgress = start;
+        String lastTail = "";
+        while (true) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Cancelled");
+            String tail;
+            try {
+                tail = transport.run("tail -c 4096 " + Shell.quote(EXPLOIT_LOG_PATH) + " 2>/dev/null || true",
+                        getCacheDir());
+            } catch (Exception e) {
+                tail = "";
+            }
+            if (!tail.equals(lastTail)) {
+                lastTail = tail;
+                lastProgress = System.currentTimeMillis();
+                final String snapshot = tail.length() > 600 ? tail.substring(tail.length() - 600) : tail;
+                post(() -> {
+                    status.setText("Exploit running…");
+                    log("exploit: " + snapshot.replace("\n", " | "));
+                });
+            }
+            if (tail.contains("exploit completed")) return;
+            long now = System.currentTimeMillis();
+            if (now - lastProgress > stallMs)
+                throw new IOException("Exploit stalled (no log progress for 120s). "
+                        + "Reboot for clean slabs and try again.");
+            if (now - start > totalMs)
+                throw new IOException("Exploit timed out after 15 minutes.");
+            Thread.sleep(2000);
+        }
+    }
+
+    private void promptKernelSu(final Shell.Transport transport, final String helperPath) {
+        post(() -> new AlertDialog.Builder(MainActivity.this)
+                .setTitle("Exploit completed")
+                .setMessage("Root verified through the exploit helper.\n\nInstall KernelSU now?")
+                .setPositiveButton("Install KernelSU",
+                        new android.content.DialogInterface.OnClickListener() {
+                            @Override public void onClick(android.content.DialogInterface d, int w) {
+                                job("Setting up KernelSU…", () -> {
+                                    try {
+                                        String result = KernelSetup.load(
+                                                Build.MODEL, transport, getCacheDir(), helperPath);
+                                        post(() -> {
+                                            kernelStatus.setText(result);
+                                            status.setText(result);
+                                            log(result);
+                                        });
+                                    } catch (Exception e) {
+                                        post(() -> kernelStatus.setText(
+                                                "KernelSU setup failed: " + e.getMessage()));
+                                        throw new RuntimeException(e);
+                                    }
+                                });
+                            }
+                        })
+                .setNegativeButton("Later", null)
+                .show());
+    }
+
+    private void checkAppUpdate() {
+        job("Checking for app updates…", () -> {
+            final int installed = AppUpdate.installedCode(this);
+            final AppUpdate.Info info = AppUpdate.check();
+            if (info.versionCode <= installed || installed == 0) {
+                final String current = AppUpdate.installedName(this);
+                post(() -> {
+                    appUpdateStatus.setText("S22 Updater " + current + " is up to date");
+                    status.setText("App is up to date");
+                    log("App update check: installed=" + installed + " latest=" + info.versionCode);
+                });
+                return;
+            }
+            post(() -> {
+                appUpdateStatus.setText("S22 Updater " + info.versionName + " available");
+                status.setText("Downloading app update…");
+                log("App update " + info.tag + " found, downloading " + info.apkName);
+            });
+            final File apk = AppUpdate.download(this, info, new Network.Progress() {
+                @Override public void update(final long read, final long total) {
+                    post(() -> {
+                        progress.setIndeterminate(total <= 0);
+                        if (total > 0) progress.setProgress((int) (read * 1000 / total));
+                        status.setText("Downloading app update • " + read + " bytes");
+                    });
+                }
+            });
+            post(() -> {
+                try {
+                    preferences.edit().putString("last_app_update", info.tag).apply();
+                } catch (Exception ignored) {
+                }
+                status.setText("App update downloaded");
+                log("App update verified, asking to install.");
+            });
+            AppUpdate.promptInstall(this, info, apk);
         });
     }
 
