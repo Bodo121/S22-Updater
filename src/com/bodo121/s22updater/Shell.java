@@ -143,14 +143,31 @@ final class Shell {
         }
 
         @Override public Proc start(String[] cmd, String[] env) throws Exception {
+            if (service == null)
+                throw new java.io.IOException("Shizuku service is gone; re-authorize and retry");
             IRemoteProcess remote;
             try {
                 remote = service.newProcess(cmd, env, null);
             } catch (android.os.RemoteException e) {
                 throw new java.io.IOException("Shizuku exec failed: " + e.getMessage());
+            } catch (SecurityException e) {
+                throw new java.io.IOException(
+                        "Shizuku denied the request: authorize this app first");
+            } catch (RuntimeException e) {
+                throw new java.io.IOException("Shizuku exec failed (" + e.getClass().getSimpleName()
+                        + (e.getMessage() == null ? "" : ": " + e.getMessage())
+                        + "); the Shizuku version may no longer support shell processes");
             }
-            if (remote == null) throw new java.io.IOException("Shizuku refused the process");
-            return new RemoteProc(remote);
+            if (remote == null)
+                throw new java.io.IOException("Shizuku refused the process (empty reply). "
+                        + "Grant permission in Shizuku, or update Shizuku: newProcess "
+                        + "support varies by server version.");
+            try {
+                return new RemoteProc(remote);
+            } catch (android.os.RemoteException e) {
+                throw new java.io.IOException("Shizuku process has no usable streams: "
+                        + e.getMessage());
+            }
         }
 
         private static void drain(Proc proc, ByteArrayOutputStream captured) throws Exception {
@@ -192,12 +209,19 @@ final class Shell {
         private final OutputStream out;
 
         RemoteProc(IRemoteProcess remote) throws Exception {
+            if (remote == null)
+                throw new java.io.IOException("Shizuku returned no remote process");
             this.remote = remote;
             try {
                 in = new android.os.ParcelFileDescriptor.AutoCloseInputStream(remote.getInputStream());
                 err = new android.os.ParcelFileDescriptor.AutoCloseInputStream(remote.getErrorStream());
                 out = new android.os.ParcelFileDescriptor.AutoCloseOutputStream(remote.getOutputStream());
+            } catch (NullPointerException e) {
+                destroy();
+                throw new java.io.IOException(
+                        "Shizuku returned a process without streams", e);
             } catch (android.os.RemoteException e) {
+                destroy();
                 throw new java.io.IOException("Shizuku stream failed: " + e.getMessage());
             }
         }

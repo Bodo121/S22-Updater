@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.4
+
+### Fixed
+- Run-exploit no longer crashes with a raw NullPointerException when Shizuku
+  returns an unusable process: null binders, refused processes and missing
+  streams now produce plain-language errors naming the failed step.
+- Run-exploit re-checks Shizuku authorization right before staging and routes
+  to the authorize flow instead of failing mid-run.
+- Diagnosis now probes server API version and `newProcess` support, since
+  current Shizuku servers dropped the `newProcess` implementation the shell
+  transport relies on.
+
+### Verification
+- Same checks as 4.3; on-device exploit run still needs phone testing.
+
 ## 4.3
 
 ### Fixed

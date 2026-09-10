@@ -57,43 +57,35 @@ public interface IRemoteProcess extends IInterface {
             }
         }
 
-        @Override public ParcelFileDescriptor getOutputStream() throws RemoteException {
+        private ParcelFileDescriptor readStream(String what) throws RemoteException {
             Parcel data = Parcel.obtain();
             Parcel reply = null;
             try {
                 data.writeInterfaceToken(DESCRIPTOR);
-                reply = transact(IBinder.FIRST_CALL_TRANSACTION + 0, data);
-                return reply.readFileDescriptor();
+                int code = IBinder.FIRST_CALL_TRANSACTION
+                        + ("output".equals(what) ? 0 : "input".equals(what) ? 1 : 2);
+                reply = transact(code, data);
+                ParcelFileDescriptor fd = reply.readFileDescriptor();
+                if (fd == null)
+                    throw new RemoteException("Shizuku returned no " + what
+                            + " stream for the remote process");
+                return fd;
             } finally {
                 data.recycle();
                 if (reply != null) reply.recycle();
             }
+        }
+
+        @Override public ParcelFileDescriptor getOutputStream() throws RemoteException {
+            return readStream("output");
         }
 
         @Override public ParcelFileDescriptor getInputStream() throws RemoteException {
-            Parcel data = Parcel.obtain();
-            Parcel reply = null;
-            try {
-                data.writeInterfaceToken(DESCRIPTOR);
-                reply = transact(IBinder.FIRST_CALL_TRANSACTION + 1, data);
-                return reply.readFileDescriptor();
-            } finally {
-                data.recycle();
-                if (reply != null) reply.recycle();
-            }
+            return readStream("input");
         }
 
         @Override public ParcelFileDescriptor getErrorStream() throws RemoteException {
-            Parcel data = Parcel.obtain();
-            Parcel reply = null;
-            try {
-                data.writeInterfaceToken(DESCRIPTOR);
-                reply = transact(IBinder.FIRST_CALL_TRANSACTION + 2, data);
-                return reply.readFileDescriptor();
-            } finally {
-                data.recycle();
-                if (reply != null) reply.recycle();
-            }
+            return readStream("error");
         }
 
         @Override public int waitFor() throws RemoteException {

@@ -102,7 +102,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(22), dp(18), dp(22), dp(12));
         text(header, "S22 / CONTROL CENTER", 12, accent, true);
         text(header, "Your device. Your updates.", 25, ink, true);
-        text(header, "IONSTACK • Version 4.3", 12, muted, false);
+        text(header, "IONSTACK • Version 4.4", 12, muted, false);
         shell.addView(header);
         FrameLayout content = new FrameLayout(this);
         shell.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -219,19 +219,51 @@ public class MainActivity extends Activity {
                 }
                 boolean granted = Shell.shizukuGranted();
                 report.append("5. authorized: ").append(granted ? "yes" : "NO").append('\n');
+                try {
+                    moe.shizuku.server.IShizukuService service = Shell.shizukuService();
+                    int serverVersion = service.getVersion();
+                    report.append("6. server API version: ").append(serverVersion).append('\n');
+                } catch (Throwable t) {
+                    report.append("6. server API version: FAILED (")
+                            .append(t.getMessage()).append(")\n");
+                }
+                try {
+                    moe.shizuku.server.IShizukuService service = Shell.shizukuService();
+                    moe.shizuku.server.IRemoteProcess probe = service.newProcess(
+                            new String[]{"/system/bin/sh", "-c", "true"}, null, null);
+                    if (probe == null) {
+                        report.append("7. newProcess probe: server returned null — this "
+                                + "Shizuku version does not support shell processes\n");
+                    } else {
+                        boolean streams = probe.getInputStream() != null
+                                && probe.getOutputStream() != null
+                                && probe.getErrorStream() != null;
+                        try {
+                            probe.destroy();
+                        } catch (Throwable ignored) {
+                        }
+                        report.append("7. newProcess probe: process created, streams "
+                                + (streams ? "OK" : "MISSING") + "\n");
+                    }
+                } catch (Throwable t) {
+                    report.append("7. newProcess probe: FAILED (")
+                            .append(t.getClass().getSimpleName())
+                            .append(t.getMessage() == null ? "" : ": " + t.getMessage())
+                            .append(")\n");
+                }
                 if (granted) {
                     try {
                         moe.shizuku.server.IShizukuService service = Shell.shizukuService();
                         String id = new Shell.ShizukuShell(service)
                                 .run("id", getCacheDir());
-                        report.append("6. shell exec test: OK (").append(id).append(")\n");
+                        report.append("8. shell exec test: OK (").append(id).append(")\n");
                     } catch (Exception e) {
-                        report.append("6. shell exec test: FAILED (")
+                        report.append("8. shell exec test: FAILED (")
                                 .append(e.getMessage()).append(")\n");
                     }
                 }
             } else {
-                report.append("4-6. skipped: no binder, so Shizuku manager has not delivered "
+                report.append("6-8. skipped: no binder, so Shizuku manager has not delivered "
                         + "one to this app. Start Shizuku, then reopen this app.\n");
             }
             final String text = report.toString();
@@ -386,7 +418,7 @@ public class MainActivity extends Activity {
                 preferences.edit().putBoolean("auto_kernel", checked).apply());
         settings.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
         text(settings, "After running IONSTACK, return to Home and check root. When enabled, a successful check also loads the matching module. It skips a module already loaded.", 13, muted, false);
-        text(about, "S22 Updater 4.3", 20, ink, true);
+        text(about, "S22 Updater 4.4", 20, ink, true);
         text(about, "System light/dark theme • Android 9+\nDownloads stay local until you install or export them. Existing v2 files are preserved.", 14, muted, false);
     }
 
@@ -801,6 +833,17 @@ public class MainActivity extends Activity {
                 }
             }
             String hash = PayloadStore.verify(payloadFile, p.size, p.sha);
+            if (transport instanceof Shell.ShizukuShell && !Shell.shizukuGranted()) {
+                post(() -> {
+                    shizukuGranted = false;
+                    shizukuStatus.setText("Shizuku shell: authorization lost");
+                    showSheet("Shizuku not authorized", "Shizuku permission was revoked "
+                            + "or never granted. Authorize this app in Shizuku, then run "
+                            + "the exploit again.", "Authorize Shizuku", this::checkShizuku,
+                            "Diagnose", this::diagnoseShizuku);
+                });
+                return;
+            }
             String helperPath = resolveHelper(p, transport);
             stageExecutable(transport, payloadFile, EXPLOIT_DEVICE_PATH, hash);
             post(() -> {
