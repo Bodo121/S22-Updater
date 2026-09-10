@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.1
+
+### Added
+- Shizuku handshake self-diagnosis: tests provider registration, the direct
+  provider call, binder liveness, server version, authorization and a shell
+  exec, reporting exactly which step fails with a copy button.
+
+### Verification
+- Same checks as 4.0; on-device Shizuku pairing still needs phone testing.
+
 ## 4.0
 
 ### Fixed

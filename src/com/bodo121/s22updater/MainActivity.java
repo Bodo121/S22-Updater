@@ -102,7 +102,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(22), dp(18), dp(22), dp(12));
         text(header, "S22 / CONTROL CENTER", 12, accent, true);
         text(header, "Your device. Your updates.", 25, ink, true);
-        text(header, "IONSTACK • Version 4.0", 12, muted, false);
+        text(header, "IONSTACK • Version 4.1", 12, muted, false);
         shell.addView(header);
         FrameLayout content = new FrameLayout(this);
         shell.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -176,6 +176,82 @@ public class MainActivity extends Activity {
         pollShizuku();
     }
 
+    /**
+     * Tests every step of the Shizuku handshake and reports exactly which one
+     * fails, so a "not detected" report becomes actionable.
+     */
+    private void diagnoseShizuku() {
+        job("Diagnosing Shizuku handshake…", () -> {
+            StringBuilder report = new StringBuilder();
+            String authority = getPackageName() + ".shizuku";
+            try {
+                android.content.pm.ProviderInfo info = getPackageManager()
+                        .resolveContentProvider(authority, 0);
+                report.append("1. provider registered: ")
+                        .append(info == null ? "NO" : "yes (" + info.name + ")").append('\n');
+            } catch (Exception e) {
+                report.append("1. provider registered: NO (").append(e.getMessage()).append(")\n");
+            }
+            try {
+                android.net.Uri uri = android.net.Uri.parse("content://" + authority);
+                android.os.Bundle reply = getContentResolver().call(uri, "getBinder", null,
+                        new android.os.Bundle());
+                report.append("2. direct provider call: ")
+                        .append(reply == null ? "null reply (no binder held)" : "binder held")
+                        .append('\n');
+            } catch (Exception e) {
+                report.append("2. direct provider call: FAILED (").append(e.getMessage()).append(")\n");
+            }
+            boolean ping = Shell.shizukuRunning();
+            report.append("3. binder alive (pingBinder): ").append(ping ? "yes" : "NO").append('\n');
+            if (ping) {
+                try {
+                    moe.shizuku.server.IShizukuService service = Shell.shizukuService();
+                    int version = service.getVersion();
+                    report.append("4. server version query: OK (v").append(version).append(")\n");
+                } catch (Throwable t) {
+                    report.append("4. server version query: FAILED (")
+                            .append(t.getMessage()).append(")\n");
+                }
+                boolean granted = Shell.shizukuGranted();
+                report.append("5. authorized: ").append(granted ? "yes" : "NO").append('\n');
+                if (granted) {
+                    try {
+                        moe.shizuku.server.IShizukuService service = Shell.shizukuService();
+                        String id = new Shell.ShizukuShell(service)
+                                .run("id", getCacheDir());
+                        report.append("6. shell exec test: OK (").append(id).append(")\n");
+                    } catch (Exception e) {
+                        report.append("6. shell exec test: FAILED (")
+                                .append(e.getMessage()).append(")\n");
+                    }
+                }
+            } else {
+                report.append("4-6. skipped: no binder, so Shizuku manager has not delivered "
+                        + "one to this app. Start Shizuku, then reopen this app.\n");
+            }
+            final String text = report.toString();
+            post(() -> {
+                status.setText("Handshake diagnosis complete");
+                log("Shizuku diagnosis:\n" + text);
+                new AlertDialog.Builder(MainActivity.this).setTitle("Shizuku diagnosis")
+                        .setMessage(text)
+                        .setPositiveButton("Copy", new android.content.DialogInterface.OnClickListener() {
+                            @Override public void onClick(android.content.DialogInterface d, int w) {
+                                android.content.ClipboardManager clipboard =
+                                        (android.content.ClipboardManager)
+                                                getSystemService(CLIPBOARD_SERVICE);
+                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                                        "Shizuku diagnosis", text));
+                                Toast.makeText(MainActivity.this, "Copied",
+                                        Toast.LENGTH_SHORT).show();
+                            }
+                        })
+                        .setNegativeButton("Close", null).show();
+            });
+        });
+    }
+
     /** Passive presence check: never requests permission, safe on every resume. */
     private void pollShizuku() {
         new Thread(new Runnable() {
@@ -203,6 +279,7 @@ public class MainActivity extends Activity {
         shizukuStatus = text(root, "Shizuku shell: not checked", 14, muted, false);
         action(root, "Authorize Shizuku shell", this::checkShizuku);
         action(root, "Open Shizuku app", this::openShizuku);
+        action(root, "Diagnose Shizuku handshake", this::diagnoseShizuku);
         text(root, "Without root, the exploit can still run through a Shizuku shell "
                 + "(install Shizuku, start it via wireless debugging, then authorize this app).", 13, muted, false);
         LinearLayout manager = card(pages[0], "KERNELSU");
@@ -310,7 +387,7 @@ public class MainActivity extends Activity {
                 preferences.edit().putBoolean("auto_kernel", checked).apply());
         settings.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
         text(settings, "After running IONSTACK, return to Home and check root. When enabled, a successful check also loads the matching module. It skips a module already loaded.", 13, muted, false);
-        text(about, "S22 Updater 4.0", 20, ink, true);
+        text(about, "S22 Updater 4.1", 20, ink, true);
         text(about, "System light/dark theme • Android 9+\nDownloads stay local until you install or export them. Existing v2 files are preserved.", 14, muted, false);
     }
 
