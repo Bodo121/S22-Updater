@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.3
+
+### Fixed
+- Run-exploit now exports `CVE43499_ROOT_HELPER` with the staged helper path,
+  matching the rebuilt IONSTACK payload and the Root-My-Galaxy helper model.
+
+### Verification
+- Same checks as 4.2; on-device exploit run still needs phone testing.
+
 ## 4.2
 
 ### Fixed

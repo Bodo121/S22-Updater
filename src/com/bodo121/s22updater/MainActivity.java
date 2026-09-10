@@ -102,7 +102,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(22), dp(18), dp(22), dp(12));
         text(header, "S22 / CONTROL CENTER", 12, accent, true);
         text(header, "Your device. Your updates.", 25, ink, true);
-        text(header, "IONSTACK • Version 4.2", 12, muted, false);
+        text(header, "IONSTACK • Version 4.3", 12, muted, false);
         shell.addView(header);
         FrameLayout content = new FrameLayout(this);
         shell.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -386,7 +386,7 @@ public class MainActivity extends Activity {
                 preferences.edit().putBoolean("auto_kernel", checked).apply());
         settings.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
         text(settings, "After running IONSTACK, return to Home and check root. When enabled, a successful check also loads the matching module. It skips a module already loaded.", 13, muted, false);
-        text(about, "S22 Updater 4.2", 20, ink, true);
+        text(about, "S22 Updater 4.3", 20, ink, true);
         text(about, "System light/dark theme • Android 9+\nDownloads stay local until you install or export them. Existing v2 files are preserved.", 14, muted, false);
     }
 
@@ -805,9 +805,9 @@ public class MainActivity extends Activity {
             stageExecutable(transport, payloadFile, EXPLOIT_DEVICE_PATH, hash);
             post(() -> {
                 status.setText("Exploit running — keep the phone idle…");
-                log("Exploit started via " + transport.name() + ". Attempt budget 24, watchdog 15 min.");
+                log("Exploit started via " + transport.name() + ". Attempt budget 24, watchdog 15 min. Helper: " + helperPath);
             });
-            String env = "EXPLOIT_ATTEMPTS=24";
+            String env = "EXPLOIT_ATTEMPTS=24 CVE43499_ROOT_HELPER=" + Shell.quote(helperPath);
             transport.run("rm -f " + Shell.quote(EXPLOIT_LOG_PATH), getCacheDir());
             transport.run("set -e; " + env + " LD_PRELOAD=" + Shell.quote(EXPLOIT_DEVICE_PATH)
                     + " /system/bin/sh > " + Shell.quote(EXPLOIT_LOG_PATH)
