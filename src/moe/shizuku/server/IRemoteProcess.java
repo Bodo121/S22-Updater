@@ -65,7 +65,13 @@ public interface IRemoteProcess extends IInterface {
                 int code = IBinder.FIRST_CALL_TRANSACTION
                         + ("output".equals(what) ? 0 : "input".equals(what) ? 1 : 2);
                 reply = transact(code, data);
-                ParcelFileDescriptor fd = reply.readFileDescriptor();
+                // Must mirror the AIDL compiler's readTypedObject(CREATOR):
+                // the server writes a presence int followed by the parcelled
+                // object. reply.readFileDescriptor() uses the legacy raw-fd
+                // encoding and always yields null here.
+                ParcelFileDescriptor fd = null;
+                if (reply.readInt() != 0)
+                    fd = ParcelFileDescriptor.CREATOR.createFromParcel(reply);
                 if (fd == null)
                     throw new RemoteException("Shizuku returned no " + what
                             + " stream for the remote process");

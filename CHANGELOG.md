@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.5
+
+### Fixed
+- Root cause of "no input stream": the hand-written Shizuku proxy decoded
+  process streams with the legacy raw-fd parcel format, while Shizuku (like
+  Root-My-Galaxy's generated stubs) uses typed-object parceling. Every
+  Shizuku-spawned process now returns working stdin/stdout/stderr. Verified
+  against transaction IDs and parcel code the AIDL compiler generates.
+
 ## 4.4
 
 ### Fixed
