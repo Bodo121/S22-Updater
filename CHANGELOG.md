@@ -2,6 +2,15 @@
 
 ## 4.0
 
+### Fixed
+- Shizuku handshake: the client library needs the server Stub classes at
+  runtime; complete hand-written stubs are now bundled, so the manager's
+  binder delivery registers the app instead of dying silently. Added a sticky
+  binder listener, resume-time recheck, an Open Shizuku button, and a guided
+  authorize flow that actually triggers the manager approval dialog.
+- App update check reports "no release published yet" with a releases-page
+  shortcut instead of a bare HTTP 404.
+
 ### Added
 - In-app self-updates: Settings → Check for app updates reads the repo's
   latest release (`app-update.json` + `SHA256SUMS`), verifies the APK hash and

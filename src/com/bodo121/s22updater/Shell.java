@@ -281,7 +281,7 @@ final class Shell {
     static IShizukuService shizukuService() {
         try {
             android.os.IBinder binder = Shizuku.getBinder();
-            return IShizukuService.asInterface(binder);
+            return IShizukuService.Stub.asInterface(binder);
         } catch (Throwable t) {
             return null;
         }

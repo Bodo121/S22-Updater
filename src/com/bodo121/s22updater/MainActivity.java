@@ -135,8 +135,61 @@ public class MainActivity extends Activity {
         showPage(state == null ? 0 : state.getInt("page", 0));
         updateManager();
         refreshControls();
+        watchShizukuBinder();
         log("Ready. Feed checks and root requests run when you tap their buttons.");
         if (preferences.getBoolean("auto_app_update", false)) checkAppUpdate();
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        pollShizuku();
+    }
+
+    /** Notices the moment Shizuku delivers (or loses) its binder, even across restarts. */
+    private void watchShizukuBinder() {
+        try {
+            rikka.shizuku.Shizuku.addBinderReceivedListenerSticky(
+                    new rikka.shizuku.Shizuku.OnBinderReceivedListener() {
+                        @Override public void onBinderReceived() {
+                            post(() -> {
+                                log("Shizuku binder received");
+                                pollShizuku();
+                                if (preferences.getBoolean("shizuku_wanted", false)
+                                        && !shizukuGranted) {
+                                    checkShizuku();
+                                }
+                            });
+                        }
+                    });
+            rikka.shizuku.Shizuku.addBinderDeadListener(
+                    new rikka.shizuku.Shizuku.OnBinderDeadListener() {
+                        @Override public void onBinderDead() {
+                            post(() -> {
+                                shizukuGranted = false;
+                                shizukuStatus.setText("Shizuku shell: binder died");
+                                log("Shizuku binder died — restart Shizuku if needed");
+                            });
+                        }
+                    });
+        } catch (Throwable ignored) {
+        }
+        pollShizuku();
+    }
+
+    /** Passive presence check: never requests permission, safe on every resume. */
+    private void pollShizuku() {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final boolean running = Shell.shizukuRunning();
+                final boolean granted = running && Shell.shizukuGranted();
+                post(() -> {
+                    shizukuGranted = granted;
+                    if (granted) shizukuStatus.setText("Shizuku shell: authorized");
+                    else if (running) shizukuStatus.setText("Shizuku shell: awaiting authorization");
+                    else shizukuStatus.setText("Shizuku shell: not running");
+                });
+            }
+        }).start();
     }
 
     private void buildHome() {
@@ -149,6 +202,7 @@ public class MainActivity extends Activity {
         action(root, "Check root access", this::checkRoot);
         shizukuStatus = text(root, "Shizuku shell: not checked", 14, muted, false);
         action(root, "Authorize Shizuku shell", this::checkShizuku);
+        action(root, "Open Shizuku app", this::openShizuku);
         text(root, "Without root, the exploit can still run through a Shizuku shell "
                 + "(install Shizuku, start it via wireless debugging, then authorize this app).", 13, muted, false);
         LinearLayout manager = card(pages[0], "KERNELSU");
@@ -460,7 +514,21 @@ public class MainActivity extends Activity {
         });
     }
 
+    private void openShizuku() {
+        try {
+            Intent intent = getPackageManager().getLaunchIntentForPackage("moe.shizuku.manager");
+            if (intent == null) throw new ActivityNotFoundException();
+            startActivity(intent);
+        } catch (Exception e) {
+            new AlertDialog.Builder(this).setTitle("Shizuku not installed")
+                    .setMessage("Install Shizuku, start it via wireless debugging, then return "
+                            + "here and tap Authorize Shizuku shell.")
+                    .setPositiveButton("OK", null).show();
+        }
+    }
+
     private void checkShizuku() {
+        preferences.edit().putBoolean("shizuku_wanted", true).apply();
         job("Checking Shizuku shell…", () -> {
             if (!Shell.shizukuRunning()) {
                 post(() -> {
@@ -468,6 +536,18 @@ public class MainActivity extends Activity {
                     shizukuStatus.setText("Shizuku shell: not running");
                     status.setText(Shell.describeShizukuState());
                     log(Shell.describeShizukuState());
+                    new AlertDialog.Builder(MainActivity.this).setTitle("Shizuku not detected")
+                            .setMessage("This app's Shizuku handshake needs Shizuku running. "
+                                    + "Open the Shizuku app, start it via wireless debugging, "
+                                    + "then tap Authorize Shizuku shell again.")
+                            .setPositiveButton("Open Shizuku",
+                                    new android.content.DialogInterface.OnClickListener() {
+                                        @Override public void onClick(
+                                                android.content.DialogInterface d, int w) {
+                                            openShizuku();
+                                        }
+                                    })
+                            .setNegativeButton("Later", null).show();
                 });
                 return;
             }
@@ -748,7 +828,33 @@ public class MainActivity extends Activity {
     private void checkAppUpdate() {
         job("Checking for app updates…", () -> {
             final int installed = AppUpdate.installedCode(this);
-            final AppUpdate.Info info = AppUpdate.check();
+            final AppUpdate.Info info;
+            try {
+                info = AppUpdate.check();
+            } catch (java.io.IOException e) {
+                if (e.getMessage() != null && e.getMessage().contains("404")) {
+                    post(() -> {
+                        appUpdateStatus.setText("No app release published yet");
+                        status.setText("No app release published yet");
+                        log("App update check: releases/latest returned 404 — publish a "
+                                + "release (push a vX.Y tag) before this check can work.");
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("No app release yet")
+                                .setMessage("This check reads the repo's latest GitHub release, "
+                                        + "and none is published. Open the releases page to confirm.")
+                                .setPositiveButton("Open releases",
+                                        new android.content.DialogInterface.OnClickListener() {
+                                            @Override public void onClick(
+                                                    android.content.DialogInterface d, int w) {
+                                                AppUpdate.openReleases(MainActivity.this);
+                                            }
+                                        })
+                                .setNegativeButton("Later", null).show();
+                    });
+                    return;
+                }
+                throw e;
+            }
             if (info.versionCode <= installed || installed == 0) {
                 final String current = AppUpdate.installedName(this);
                 post(() -> {
