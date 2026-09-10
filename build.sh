@@ -6,6 +6,9 @@
 # Optional signing overrides (release builds should reuse one keystore so
 # updates install cleanly over previous versions):
 #   SIGN_KEYSTORE, SIGN_STORE_PASS, SIGN_KEY_PASS, SIGN_ALIAS
+# Optional Android 9+ key-rotation lineage for one-time migration from an old
+# signing key:
+#   SIGN_LINEAGE, SIGN_ROTATION_MIN_SDK (default 28)
 set -euo pipefail
 shopt -s globstar nullglob
 fail() { echo "build: ERROR: $*" >&2; exit 1; }
@@ -94,13 +97,22 @@ KS="${SIGN_KEYSTORE:-$HERE/debug.keystore}"
 STORE_PASS="${SIGN_STORE_PASS:-android}"
 KEY_PASS="${SIGN_KEY_PASS:-android}"
 KEY_ALIAS="${SIGN_ALIAS:-androiddebugkey}"
+LINEAGE="${SIGN_LINEAGE:-}"
 if [ ! -f "$KS" ]; then
   [ "$KS" = "$HERE/debug.keystore" ] || fail "signing keystore not found: $KS"
   "$JAVA_HOME/bin/keytool" -genkeypair -keystore "$KS" -storepass "$STORE_PASS" \
     -keypass "$KEY_PASS" -alias "$KEY_ALIAS" -keyalg RSA -keysize 2048 \
     -validity 10950 -dname "CN=Android Debug,O=Android,C=US" || fail "keytool"
 fi
-"$BT/apksigner" sign --ks "$KS" --ks-pass "pass:$STORE_PASS" --key-pass "pass:$KEY_PASS" \
+sign_args=(--ks "$KS" --ks-key-alias "$KEY_ALIAS" --ks-pass "pass:$STORE_PASS" \
+  --key-pass "pass:$KEY_PASS")
+if [ -n "$LINEAGE" ]; then
+  [ -f "$LINEAGE" ] || fail "signing lineage not found: $LINEAGE"
+  sign_args+=(--lineage "$LINEAGE" --min-sdk-version 28 \
+    --rotation-min-sdk-version "${SIGN_ROTATION_MIN_SDK:-28}" \
+    --v1-signing-enabled false --v2-signing-enabled false --v3-signing-enabled true)
+fi
+"$BT/apksigner" sign "${sign_args[@]}" \
   --out "$OUT/$APK_BASENAME.apk" "$OUT/aligned.apk" || fail "apksigner"
 "$BT/apksigner" verify --verbose --print-certs "$OUT/$APK_BASENAME.apk"
 "$BT/zipalign" -c 4 "$OUT/$APK_BASENAME.apk"

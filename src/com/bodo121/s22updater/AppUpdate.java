@@ -1,18 +1,22 @@
 package com.bodo121.s22updater;
 
 import android.app.Activity;
-import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.Signature;
 import android.net.Uri;
 import android.os.Build;
+import android.provider.Settings;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.security.MessageDigest;
+import java.util.HashSet;
+import java.util.Set;
 
 /** Self-update check against this app's own GitHub releases. */
 final class AppUpdate {
@@ -29,6 +33,14 @@ final class AppUpdate {
         String apkUrl = "";
         String apkSha256 = "";
         String htmlUrl = RELEASES_PAGE;
+    }
+
+    static final class SignatureReport {
+        boolean compatible;
+        String problem = "";
+        String packageName = "";
+        String installedCert = "";
+        String updateCert = "";
     }
 
     static int installedCode(Context context) {
@@ -117,6 +129,84 @@ final class AppUpdate {
         }
     }
 
+    static boolean canRequestPackageInstalls(Context context) {
+        return Build.VERSION.SDK_INT < 26 || context.getPackageManager().canRequestPackageInstalls();
+    }
+
+    static void openInstallPermission(Activity activity) {
+        try {
+            Intent intent = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                    Uri.parse("package:" + activity.getPackageName()));
+            activity.startActivity(intent);
+        } catch (Exception e) {
+            activity.startActivity(new Intent(Settings.ACTION_SECURITY_SETTINGS));
+        }
+    }
+
+    static SignatureReport checkInstallCompatibility(Context context, File apk) throws Exception {
+        SignatureReport report = new SignatureReport();
+        PackageManager pm = context.getPackageManager();
+        int flags = signatureFlags();
+        PackageInfo current = pm.getPackageInfo(context.getPackageName(), flags);
+        PackageInfo update = pm.getPackageArchiveInfo(apk.getAbsolutePath(), flags);
+        if (update == null) throw new java.io.IOException("Downloaded APK could not be parsed");
+        report.packageName = update.packageName == null ? "" : update.packageName;
+        if (!context.getPackageName().equals(report.packageName)) {
+            report.problem = "Downloaded APK package is " + report.packageName
+                    + ", expected " + context.getPackageName();
+            return report;
+        }
+        Set<String> installed = certDigests(current);
+        Set<String> incoming = certDigests(update);
+        report.installedCert = first(installed);
+        report.updateCert = first(incoming);
+        if (installed.isEmpty() || incoming.isEmpty()) {
+            report.problem = "Could not read APK signing certificates";
+            return report;
+        }
+        for (String digest : installed) {
+            if (incoming.contains(digest)) {
+                report.compatible = true;
+                return report;
+            }
+        }
+        report.problem = "Installed app and update APK are signed by different certificates";
+        return report;
+    }
+
+    private static int signatureFlags() {
+        if (Build.VERSION.SDK_INT >= 28) return PackageManager.GET_SIGNING_CERTIFICATES;
+        return PackageManager.GET_SIGNATURES;
+    }
+
+    @SuppressWarnings("deprecation")
+    private static Set<String> certDigests(PackageInfo info) throws Exception {
+        HashSet<String> digests = new HashSet<>();
+        Signature[] signatures;
+        if (Build.VERSION.SDK_INT >= 28 && info.signingInfo != null) {
+            signatures = info.signingInfo.hasMultipleSigners()
+                    ? info.signingInfo.getApkContentsSigners()
+                    : info.signingInfo.getSigningCertificateHistory();
+        } else {
+            signatures = info.signatures;
+        }
+        if (signatures == null) return digests;
+        for (Signature signature : signatures) digests.add(sha256(signature.toByteArray()));
+        return digests;
+    }
+
+    private static String first(Set<String> values) {
+        for (String value : values) return value;
+        return "";
+    }
+
+    private static String sha256(byte[] bytes) throws Exception {
+        byte[] digest = MessageDigest.getInstance("SHA-256").digest(bytes);
+        StringBuilder out = new StringBuilder(digest.length * 2);
+        for (byte b : digest) out.append(String.format("%02x", b & 0xff));
+        return out.toString();
+    }
+
     static void install(Activity activity, File apk) {
         Uri uri = ApkProvider.uriFor(activity, apk);
         Intent intent = new Intent(Intent.ACTION_VIEW);
@@ -132,26 +222,4 @@ final class AppUpdate {
         }
     }
 
-    static void promptInstall(final Activity activity, final Info info, final File apk) {
-        activity.runOnUiThread(new Runnable() {
-            @Override public void run() {
-                new AlertDialog.Builder(activity)
-                        .setTitle("Install app update?")
-                        .setMessage("S22 Updater " + info.versionName + " is downloaded and verified.\n\n"
-                                + "Android will ask you to confirm the install.")
-                        .setPositiveButton("Install",
-                                new android.content.DialogInterface.OnClickListener() {
-                                    @Override public void onClick(android.content.DialogInterface d, int w) {
-                                        try {
-                                            install(activity, apk);
-                                        } catch (Exception e) {
-                                            openReleases(activity);
-                                        }
-                                    }
-                                })
-                        .setNegativeButton("Later", null)
-                        .show();
-            }
-        });
-    }
 }

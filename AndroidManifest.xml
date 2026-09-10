@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.bodo121.s22updater"
-    android:versionCode="5"
-    android:versionName="4.1">
+    android:versionCode="6"
+    android:versionName="4.2">
 
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <queries>
         <package android:name="com.rifsxd.ksunext" />
         <package android:name="me.weishu.kernelsu" />

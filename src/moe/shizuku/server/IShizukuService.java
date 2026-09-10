@@ -2,8 +2,9 @@
 //
 // Derived from RikkaApps/Shizuku-API
 // (aidl/src/main/aidl/moe/shizuku/server/IShizukuService.aidl, Apache-2.0).
-// Transaction codes follow the explicit AIDL numbering. The nested Stub exists
-// because rikka.shizuku.Shizuku calls IShizukuService$Stub.asInterface().
+// Transaction IDs are Android's generated Binder codes: FIRST_CALL_TRANSACTION
+// plus the explicit AIDL number. The nested Stub exists because
+// rikka.shizuku.Shizuku calls IShizukuService$Stub.asInterface().
 package moe.shizuku.server;
 
 import android.content.Intent;
@@ -101,13 +102,16 @@ public interface IShizukuService extends IInterface {
             }
         }
 
+        private static int tx(int aidlCode) {
+            return IBinder.FIRST_CALL_TRANSACTION + aidlCode;
+        }
+
         private void callVoid(int code, Parcel data) throws RemoteException {
             Parcel reply = Parcel.obtain();
             try {
                 remote.transact(code, data, reply, 0);
                 reply.readException();
             } finally {
-                data.recycle();
                 reply.recycle();
             }
         }
@@ -126,7 +130,7 @@ public interface IShizukuService extends IInterface {
             Parcel reply = null;
             try {
                 data.writeInterfaceToken(DESCRIPTOR);
-                reply = call(2, data);
+                reply = call(tx(2), data);
                 return reply.readInt();
             } finally {
                 data.recycle();
@@ -139,7 +143,7 @@ public interface IShizukuService extends IInterface {
             Parcel reply = null;
             try {
                 data.writeInterfaceToken(DESCRIPTOR);
-                reply = call(3, data);
+                reply = call(tx(3), data);
                 return reply.readInt();
             } finally {
                 data.recycle();
@@ -153,7 +157,7 @@ public interface IShizukuService extends IInterface {
             try {
                 data.writeInterfaceToken(DESCRIPTOR);
                 data.writeString(permission);
-                reply = call(4, data);
+                reply = call(tx(4), data);
                 return reply.readInt();
             } finally {
                 data.recycle();
@@ -170,7 +174,7 @@ public interface IShizukuService extends IInterface {
                 data.writeStringArray(cmd);
                 data.writeStringArray(env);
                 data.writeString(dir);
-                remote.transact(7, data, reply, 0);
+                remote.transact(tx(7), data, reply, 0);
                 reply.readException();
                 return IRemoteProcess.asInterface(reply.readStrongBinder());
             } finally {
@@ -184,7 +188,7 @@ public interface IShizukuService extends IInterface {
             Parcel reply = null;
             try {
                 data.writeInterfaceToken(DESCRIPTOR);
-                reply = call(8, data);
+                reply = call(tx(8), data);
                 return reply.readString();
             } finally {
                 data.recycle();
@@ -200,7 +204,7 @@ public interface IShizukuService extends IInterface {
                 data.writeInterfaceToken(DESCRIPTOR);
                 data.writeString(name);
                 data.writeString(defaultValue);
-                reply = call(9, data);
+                reply = call(tx(9), data);
                 return reply.readString();
             } finally {
                 data.recycle();
@@ -214,7 +218,7 @@ public interface IShizukuService extends IInterface {
                 data.writeInterfaceToken(DESCRIPTOR);
                 data.writeString(name);
                 data.writeString(value);
-                callVoid(10, data);
+                callVoid(tx(10), data);
             } finally {
                 data.recycle();
             }
@@ -228,7 +232,7 @@ public interface IShizukuService extends IInterface {
                 data.writeInterfaceToken(DESCRIPTOR);
                 data.writeStrongBinder(conn == null ? null : conn.asBinder());
                 writeBundle(data, args);
-                reply = call(11, data);
+                reply = call(tx(11), data);
                 return reply.readInt();
             } finally {
                 data.recycle();
@@ -244,7 +248,7 @@ public interface IShizukuService extends IInterface {
                 data.writeInterfaceToken(DESCRIPTOR);
                 data.writeStrongBinder(conn == null ? null : conn.asBinder());
                 writeBundle(data, args);
-                reply = call(12, data);
+                reply = call(tx(12), data);
                 return reply.readInt();
             } finally {
                 data.recycle();
@@ -257,7 +261,7 @@ public interface IShizukuService extends IInterface {
             try {
                 data.writeInterfaceToken(DESCRIPTOR);
                 data.writeInt(requestCode);
-                callVoid(14, data);
+                callVoid(tx(14), data);
             } finally {
                 data.recycle();
             }
@@ -268,7 +272,7 @@ public interface IShizukuService extends IInterface {
             Parcel reply = null;
             try {
                 data.writeInterfaceToken(DESCRIPTOR);
-                reply = call(15, data);
+                reply = call(tx(15), data);
                 return reply.readInt() != 0;
             } finally {
                 data.recycle();
@@ -281,7 +285,7 @@ public interface IShizukuService extends IInterface {
             Parcel reply = null;
             try {
                 data.writeInterfaceToken(DESCRIPTOR);
-                reply = call(16, data);
+                reply = call(tx(16), data);
                 return reply.readInt() != 0;
             } finally {
                 data.recycle();
@@ -296,7 +300,7 @@ public interface IShizukuService extends IInterface {
                 data.writeInterfaceToken(DESCRIPTOR);
                 data.writeStrongBinder(application == null ? null : application.asBinder());
                 writeBundle(data, args);
-                callVoid(17, data);
+                callVoid(tx(17), data);
             } finally {
                 data.recycle();
             }
@@ -306,7 +310,7 @@ public interface IShizukuService extends IInterface {
             Parcel data = Parcel.obtain();
             try {
                 data.writeInterfaceToken(DESCRIPTOR);
-                callVoid(100, data);
+                callVoid(tx(100), data);
             } finally {
                 data.recycle();
             }
@@ -319,7 +323,7 @@ public interface IShizukuService extends IInterface {
                 data.writeInterfaceToken(DESCRIPTOR);
                 data.writeStrongBinder(binder);
                 writeBundle(data, options);
-                callVoid(101, data);
+                callVoid(tx(101), data);
             } finally {
                 data.recycle();
             }
@@ -335,7 +339,7 @@ public interface IShizukuService extends IInterface {
                 } else {
                     data.writeInt(0);
                 }
-                remote.transact(102, data, null, IBinder.FLAG_ONEWAY);
+                remote.transact(tx(102), data, null, IBinder.FLAG_ONEWAY);
             } finally {
                 data.recycle();
             }
@@ -347,7 +351,7 @@ public interface IShizukuService extends IInterface {
             try {
                 data.writeInterfaceToken(DESCRIPTOR);
                 data.writeInt(uid);
-                reply = call(103, data);
+                reply = call(tx(103), data);
                 return reply.readInt() != 0;
             } finally {
                 data.recycle();
@@ -365,7 +369,7 @@ public interface IShizukuService extends IInterface {
                 out.writeInt(requestPid);
                 out.writeInt(requestCode);
                 writeBundle(out, data);
-                remote.transact(104, out, null, IBinder.FLAG_ONEWAY);
+                remote.transact(tx(104), out, null, IBinder.FLAG_ONEWAY);
             } finally {
                 out.recycle();
             }
@@ -378,7 +382,7 @@ public interface IShizukuService extends IInterface {
                 data.writeInterfaceToken(DESCRIPTOR);
                 data.writeInt(uid);
                 data.writeInt(mask);
-                reply = call(105, data);
+                reply = call(tx(105), data);
                 return reply.readInt();
             } finally {
                 data.recycle();
@@ -394,7 +398,7 @@ public interface IShizukuService extends IInterface {
                 data.writeInt(uid);
                 data.writeInt(mask);
                 data.writeInt(value);
-                callVoid(106, data);
+                callVoid(tx(106), data);
             } finally {
                 data.recycle();
             }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.2
+
+### Fixed
+- Shizuku provider registration now declares the manager API permission, actively
+  requests binder delivery, waits before reporting unavailable, and uses AIDL
+  transaction IDs that match Android's generated Binder stubs.
+- App updates now preflight package name/signing compatibility and unknown-source
+  install permission before launching Package Installer, so signature conflicts
+  get a clear repair path instead of Android's generic package-conflict message.
+- Release APK signing can include Android 9+ debug-to-release key lineage so old
+  local debug-key installs can migrate to the stable release key.
+
+### Changed
+- Replaced old platform popups with rounded in-app sheets matching the UI.
+
 ## 4.1
 
 ### Added

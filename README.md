@@ -1,4 +1,4 @@
-# S22 Updater 4.0
+# S22 Updater 4.2
 
 A rebuilt control center for the personal IONSTACK-S22 / KernelSU phone project.
 
@@ -9,15 +9,17 @@ Get the latest release (APK + SHA256SUMS + app-update.json) from
 
 ```sh
 sha256sum -c SHA256SUMS
-adb install -r S22-Updater-v4.apk
+adb install -r S22-Updater-v4.2.apk
 ```
 
 Android 9 or later is required.
 
 > Signing break from v3: v4 is signed with a new key (the v3 signing key was a
-> local-only file and is gone), so uninstall v3 before installing v4. From v4
-> on, in-app updates work as long as every release uses the same key — back up
-> your keystore and add it to the release workflow secrets (see below).
+> local-only file and is gone), so uninstall v3 before installing v4. v4.2 also
+> carries Android 9+ signing lineage from the local v4 debug key to the release
+> key, so old local v4 debug builds can migrate without the package-conflict
+> error. If your installed APK used any other lost key, Android still requires a
+> one-time uninstall; future release-key updates then work normally.
 
 ## App updates
 
@@ -28,7 +30,7 @@ reads this repo's latest GitHub release, downloads the APK from the release's
 
 Releases are built by
 [`.github/workflows/release.yml`](.github/workflows/release.yml): push a tag
-matching the manifest (`v4.0` for versionName `4.0`) and the workflow builds,
+matching the manifest (`v4.2` for versionName `4.2`) and the workflow builds,
 signs, and publishes the APK + SHA256SUMS + app-update.json. `ci.yml` verifies
 every other push with a full build and the host tests.
 
@@ -42,11 +44,14 @@ One-time setup for updatable releases — repository secrets:
 | `SIGN_ALIAS` | key alias |
 
 Without them the release is signed with a throwaway key (fresh installs only).
+With them, `signing-lineage.bin` is included automatically so Android 9+ can
+accept the release key as the successor to the old local debug key.
 
 ## Interface and workflows
 
 - **Home:** device information, explicit root check, Shizuku shell authorization,
-  correct KernelSU-Next Manager detection (`com.rifsxd.ksunext`) and Manager launch.
+  correct KernelSU-Next Manager detection (`com.rifsxd.ksunext`), Shizuku
+  handshake diagnosis, and Manager launch.
 - **Updates:** schema-v3 feed, payload selection, download/install/run/export
   actions, progress, local SHA-256 and feed hash comparison.
 - **Activity:** session diagnostics with a copy button; independent GitHub
@@ -123,7 +128,7 @@ Needs JDK 17, Android build-tools 34 and `android-34/android.jar`.
 
 ```sh
 bash build.sh
-adb install -r out/S22-Updater-v4.apk
+adb install -r out/S22-Updater-v4.2.apk
 ```
 
 Override `JAVA_HOME`, `BT`, and `PLATFORM` for your installation. The output
@@ -133,9 +138,10 @@ Shizuku binder stubs in `src/moe/shizuku/server/`, and dexes everything
 without Gradle.
 
 Signing: `SIGN_KEYSTORE`/`SIGN_STORE_PASS`/`SIGN_KEY_PASS`/`SIGN_ALIAS`
-override the default throwaway debug key. Reuse one keystore for every build
-you ship, or Android will refuse updates — back it up somewhere safe, it is
-git-ignored.
+override the default throwaway debug key. Add `SIGN_LINEAGE=signing-lineage.bin`
+when signing with the release key to include the debug-to-release migration
+proof. Reuse one keystore for every build you ship, or Android will refuse
+updates — back it up somewhere safe, it is git-ignored.
 
 ## Verification
 
@@ -168,16 +174,17 @@ adb logcat -b crash -d
 ## Repository layout
 
 ```text
-AndroidManifest.xml   App identity, version and permissions
-build.sh              Build and sign using local Android tools
-src/                  UI, downloads, file storage, root/Shizuku shells, KernelSU setup
-src/moe/              Shizuku binder stubs (from Shizuku-API AIDL, Apache-2.0)
-res/                  Launcher icon and Android resources
-tests/                Host regression tests and Android smoke test
-.github/workflows/   CI build check + tagged release publisher
+AndroidManifest.xml    App identity, version and permissions
+build.sh               Build and sign using local Android tools
+signing-lineage.bin    Android 9+ debug-to-release key-rotation proof
+src/                   UI, downloads, file storage, root/Shizuku shells, KernelSU setup
+src/moe/               Shizuku binder stubs (from Shizuku-API AIDL, Apache-2.0)
+res/                   Launcher icon and Android resources
+tests/                 Host regression tests and Android smoke test
+.github/workflows/    CI build check + tagged release publisher
 S22-Updater-v3.apk     Previous installable build (v4 needs a fresh install: new key)
-SHA256SUMS            Published APK checksum
-CHANGELOG.md          Release notes
+SHA256SUMS             Published APK checksum
+CHANGELOG.md           Release notes
 ```
 
 Build output and signing keys are ignored. A fresh clone generates its own debug

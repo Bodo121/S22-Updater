@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import moe.shizuku.server.IRemoteProcess;
 import moe.shizuku.server.IShizukuService;
 import rikka.shizuku.Shizuku;
+import rikka.shizuku.ShizukuProvider;
 
 /** Privileged command execution behind either root (su) or a Shizuku shell. */
 final class Shell {
@@ -267,6 +268,29 @@ final class Shell {
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    static void requestShizukuBinder(android.content.Context context) {
+        try {
+            ShizukuProvider.requestBinderForNonProviderProcess(
+                    context.getApplicationContext());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static boolean awaitShizukuRunning(android.content.Context context, long timeoutMs) {
+        requestShizukuBinder(context);
+        long deadline = System.currentTimeMillis() + Math.max(0, timeoutMs);
+        do {
+            if (shizukuRunning()) return true;
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        } while (System.currentTimeMillis() < deadline);
+        return shizukuRunning();
     }
 
     static boolean shizukuGranted() {

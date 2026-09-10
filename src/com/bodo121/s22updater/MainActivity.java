@@ -1,7 +1,7 @@
 package com.bodo121.s22updater;
 
 import android.app.Activity;
-import android.app.AlertDialog;
+import android.app.Dialog;
 import android.content.*;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
@@ -102,7 +102,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(22), dp(18), dp(22), dp(12));
         text(header, "S22 / CONTROL CENTER", 12, accent, true);
         text(header, "Your device. Your updates.", 25, ink, true);
-        text(header, "IONSTACK • Version 4.1", 12, muted, false);
+        text(header, "IONSTACK • Version 4.2", 12, muted, false);
         shell.addView(header);
         FrameLayout content = new FrameLayout(this);
         shell.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -147,6 +147,7 @@ public class MainActivity extends Activity {
 
     /** Notices the moment Shizuku delivers (or loses) its binder, even across restarts. */
     private void watchShizukuBinder() {
+        Shell.requestShizukuBinder(this);
         try {
             rikka.shizuku.Shizuku.addBinderReceivedListenerSticky(
                     new rikka.shizuku.Shizuku.OnBinderReceivedListener() {
@@ -184,6 +185,9 @@ public class MainActivity extends Activity {
         job("Diagnosing Shizuku handshake…", () -> {
             StringBuilder report = new StringBuilder();
             String authority = getPackageName() + ".shizuku";
+            boolean managerInstalled = isPackageInstalled("moe.shizuku.manager");
+            report.append("0. Shizuku Manager installed: ")
+                    .append(managerInstalled ? "yes" : "NO").append('\n');
             try {
                 android.content.pm.ProviderInfo info = getPackageManager()
                         .resolveContentProvider(authority, 0);
@@ -202,7 +206,7 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 report.append("2. direct provider call: FAILED (").append(e.getMessage()).append(")\n");
             }
-            boolean ping = Shell.shizukuRunning();
+            boolean ping = Shell.awaitShizukuRunning(this, 4000);
             report.append("3. binder alive (pingBinder): ").append(ping ? "yes" : "NO").append('\n');
             if (ping) {
                 try {
@@ -234,20 +238,13 @@ public class MainActivity extends Activity {
             post(() -> {
                 status.setText("Handshake diagnosis complete");
                 log("Shizuku diagnosis:\n" + text);
-                new AlertDialog.Builder(MainActivity.this).setTitle("Shizuku diagnosis")
-                        .setMessage(text)
-                        .setPositiveButton("Copy", new android.content.DialogInterface.OnClickListener() {
-                            @Override public void onClick(android.content.DialogInterface d, int w) {
-                                android.content.ClipboardManager clipboard =
-                                        (android.content.ClipboardManager)
-                                                getSystemService(CLIPBOARD_SERVICE);
-                                clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
-                                        "Shizuku diagnosis", text));
-                                Toast.makeText(MainActivity.this, "Copied",
-                                        Toast.LENGTH_SHORT).show();
-                            }
-                        })
-                        .setNegativeButton("Close", null).show();
+                showSheet("Shizuku diagnosis", text, "Copy", () -> {
+                    android.content.ClipboardManager clipboard =
+                            (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    clipboard.setPrimaryClip(android.content.ClipData.newPlainText(
+                            "Shizuku diagnosis", text));
+                    Toast.makeText(MainActivity.this, "Copied", Toast.LENGTH_SHORT).show();
+                }, "Close", null);
             });
         });
     }
@@ -256,13 +253,15 @@ public class MainActivity extends Activity {
     private void pollShizuku() {
         new Thread(new Runnable() {
             @Override public void run() {
-                final boolean running = Shell.shizukuRunning();
+                final boolean running = Shell.awaitShizukuRunning(MainActivity.this, 1000);
                 final boolean granted = running && Shell.shizukuGranted();
                 post(() -> {
                     shizukuGranted = granted;
                     if (granted) shizukuStatus.setText("Shizuku shell: authorized");
                     else if (running) shizukuStatus.setText("Shizuku shell: awaiting authorization");
-                    else shizukuStatus.setText("Shizuku shell: not running");
+                    else shizukuStatus.setText(isPackageInstalled("moe.shizuku.manager")
+                            ? "Shizuku shell: service not connected"
+                            : "Shizuku shell: manager not installed");
                 });
             }
         }).start();
@@ -387,7 +386,7 @@ public class MainActivity extends Activity {
                 preferences.edit().putBoolean("auto_kernel", checked).apply());
         settings.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
         text(settings, "After running IONSTACK, return to Home and check root. When enabled, a successful check also loads the matching module. It skips a module already loaded.", 13, muted, false);
-        text(about, "S22 Updater 4.1", 20, ink, true);
+        text(about, "S22 Updater 4.2", 20, ink, true);
         text(about, "System light/dark theme • Android 9+\nDownloads stay local until you install or export them. Existing v2 files are preserved.", 14, muted, false);
     }
 
@@ -438,7 +437,58 @@ public class MainActivity extends Activity {
         String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
         status.setText(message);
         log("Failed: " + message);
-        Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        showSheet("Action failed", message, "OK", null, null, null);
+    }
+
+    private void showSheet(String title, String message, String primary, final Runnable primaryAction,
+                           String secondary, final Runnable secondaryAction) {
+        if (closed || isFinishing()) return;
+        final Dialog dialog = new Dialog(this);
+        dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        LinearLayout panel = column();
+        panel.setBackground(shape(surface, 24));
+        panel.setPadding(dp(20), dp(18), dp(20), dp(16));
+        TextView eyebrow = text(panel, "S22 UPDATER", 11, accent, true);
+        eyebrow.setLetterSpacing(0.08f);
+        text(panel, title, 21, ink, true);
+        TextView body = text(panel, message, 14, muted, false);
+        body.setTextIsSelectable(message.length() > 180);
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.END);
+        row.setPadding(0, dp(10), 0, 0);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        if (secondary != null && !secondary.isEmpty()) {
+            Button second = makeButton(secondary, false);
+            second.setOnClickListener(v -> {
+                dialog.dismiss();
+                if (secondaryAction != null) secondaryAction.run();
+            });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(50), 1);
+            row.addView(second, params);
+        }
+        if (primary != null && !primary.isEmpty()) {
+            Button first = makeButton(primary, true);
+            first.setOnClickListener(v -> {
+                dialog.dismiss();
+                if (primaryAction != null) primaryAction.run();
+            });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(50), 1);
+            if (row.getChildCount() > 0) params.leftMargin = dp(10);
+            row.addView(first, params);
+        }
+        panel.addView(row, new LinearLayout.LayoutParams(-1, -2));
+        dialog.setContentView(panel);
+        dialog.setOnShowListener(d -> {
+            Window window = dialog.getWindow();
+            if (window != null) {
+                window.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(
+                        Color.TRANSPARENT));
+                window.setDimAmount(0.42f);
+                window.setLayout(Math.min(getResources().getDisplayMetrics().widthPixels - dp(28), dp(520)),
+                        WindowManager.LayoutParams.WRAP_CONTENT);
+            }
+        });
+        dialog.show();
     }
 
     private void log(String value) {
@@ -597,34 +647,29 @@ public class MainActivity extends Activity {
             if (intent == null) throw new ActivityNotFoundException();
             startActivity(intent);
         } catch (Exception e) {
-            new AlertDialog.Builder(this).setTitle("Shizuku not installed")
-                    .setMessage("Install Shizuku, start it via wireless debugging, then return "
-                            + "here and tap Authorize Shizuku shell.")
-                    .setPositiveButton("OK", null).show();
+            showSheet("Shizuku not installed", "Install Shizuku, start it via wireless "
+                    + "debugging, then return here and tap Authorize Shizuku shell.",
+                    "OK", null, null, null);
         }
     }
 
     private void checkShizuku() {
         preferences.edit().putBoolean("shizuku_wanted", true).apply();
         job("Checking Shizuku shell…", () -> {
-            if (!Shell.shizukuRunning()) {
+            if (!Shell.awaitShizukuRunning(this, 4000)) {
                 post(() -> {
                     shizukuGranted = false;
-                    shizukuStatus.setText("Shizuku shell: not running");
+                    shizukuStatus.setText(isPackageInstalled("moe.shizuku.manager")
+                            ? "Shizuku shell: service not connected"
+                            : "Shizuku shell: manager not installed");
                     status.setText(Shell.describeShizukuState());
                     log(Shell.describeShizukuState());
-                    new AlertDialog.Builder(MainActivity.this).setTitle("Shizuku not detected")
-                            .setMessage("This app's Shizuku handshake needs Shizuku running. "
-                                    + "Open the Shizuku app, start it via wireless debugging, "
-                                    + "then tap Authorize Shizuku shell again.")
-                            .setPositiveButton("Open Shizuku",
-                                    new android.content.DialogInterface.OnClickListener() {
-                                        @Override public void onClick(
-                                                android.content.DialogInterface d, int w) {
-                                            openShizuku();
-                                        }
-                                    })
-                            .setNegativeButton("Later", null).show();
+                    showSheet("Shizuku not connected", "Shizuku Manager is installed, but "
+                            + "this app did not receive Shizuku's binder after waiting. Open "
+                            + "Shizuku, confirm the service says Running, then return here. If "
+                            + "S22 Updater is not listed in Shizuku's Apps screen, install this "
+                            + "v4.2 build fresh so the provider permission is registered.",
+                            "Open Shizuku", this::openShizuku, "Diagnose", this::diagnoseShizuku);
                 });
                 return;
             }
@@ -666,6 +711,15 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    private boolean isPackageInstalled(String id) {
+        try {
+            getPackageManager().getPackageInfo(id, 0);
+            return true;
+        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+            return false;
+        }
+    }
+
     private void setupKernel(Shell.Transport transport) throws Exception {
         try {
             String helper = null;
@@ -699,9 +753,8 @@ public class MainActivity extends Activity {
                 try { startActivity(intent); return; } catch (ActivityNotFoundException ignored) { }
             }
         }
-        new AlertDialog.Builder(this).setTitle("Manager not found")
-                .setMessage("Install your matching KernelSU Manager APK first, then return here.")
-                .setPositiveButton("OK", null).show();
+        showSheet("Manager not found", "Install your matching KernelSU Manager APK first, "
+                + "then return here.", "OK", null, null, null);
     }
 
     private void deploy() {
@@ -727,12 +780,11 @@ public class MainActivity extends Activity {
         if (p == null) return;
         final Shell.Transport transport = pickTransport();
         if (transport == null) {
-            new AlertDialog.Builder(this).setTitle("No privileged shell")
-                    .setMessage("Running the exploit needs root or a Shizuku shell.\n\n"
-                            + Shell.describeShizukuState() + "\n\n"
-                            + "Grant root in Home, or authorize Shizuku and try again. "
-                            + "Without either, use support/deploy.sh from a computer.")
-                    .setPositiveButton("OK", null).show();
+            showSheet("No privileged shell", "Running the exploit needs root or an "
+                    + "authorized Shizuku shell.\n\n" + Shell.describeShizukuState()
+                    + "\n\nGrant root in Home, or authorize Shizuku and try again. "
+                    + "Without either, use support/deploy.sh from a computer.",
+                    "Authorize Shizuku", this::checkShizuku, "Close", null);
             return;
         }
         job("Running exploit via " + transport.name() + "…", () -> {
@@ -875,31 +927,23 @@ public class MainActivity extends Activity {
     }
 
     private void promptKernelSu(final Shell.Transport transport, final String helperPath) {
-        post(() -> new AlertDialog.Builder(MainActivity.this)
-                .setTitle("Exploit completed")
-                .setMessage("Root verified through the exploit helper.\n\nInstall KernelSU now?")
-                .setPositiveButton("Install KernelSU",
-                        new android.content.DialogInterface.OnClickListener() {
-                            @Override public void onClick(android.content.DialogInterface d, int w) {
-                                job("Setting up KernelSU…", () -> {
-                                    try {
-                                        String result = KernelSetup.load(
-                                                Build.MODEL, transport, getCacheDir(), helperPath);
-                                        post(() -> {
-                                            kernelStatus.setText(result);
-                                            status.setText(result);
-                                            log(result);
-                                        });
-                                    } catch (Exception e) {
-                                        post(() -> kernelStatus.setText(
-                                                "KernelSU setup failed: " + e.getMessage()));
-                                        throw new RuntimeException(e);
-                                    }
-                                });
-                            }
-                        })
-                .setNegativeButton("Later", null)
-                .show());
+        post(() -> showSheet("Exploit completed", "Root verified through the exploit helper.\n\n"
+                + "Install KernelSU now?", "Install KernelSU", () ->
+                job("Setting up KernelSU…", () -> {
+                    try {
+                        String result = KernelSetup.load(Build.MODEL, transport,
+                                getCacheDir(), helperPath);
+                        post(() -> {
+                            kernelStatus.setText(result);
+                            status.setText(result);
+                            log(result);
+                        });
+                    } catch (Exception e) {
+                        post(() -> kernelStatus.setText(
+                                "KernelSU setup failed: " + e.getMessage()));
+                        throw new RuntimeException(e);
+                    }
+                }), "Later", null));
     }
 
     private void checkAppUpdate() {
@@ -915,18 +959,10 @@ public class MainActivity extends Activity {
                         status.setText("No app release published yet");
                         log("App update check: releases/latest returned 404 — publish a "
                                 + "release (push a vX.Y tag) before this check can work.");
-                        new AlertDialog.Builder(MainActivity.this)
-                                .setTitle("No app release yet")
-                                .setMessage("This check reads the repo's latest GitHub release, "
-                                        + "and none is published. Open the releases page to confirm.")
-                                .setPositiveButton("Open releases",
-                                        new android.content.DialogInterface.OnClickListener() {
-                                            @Override public void onClick(
-                                                    android.content.DialogInterface d, int w) {
-                                                AppUpdate.openReleases(MainActivity.this);
-                                            }
-                                        })
-                                .setNegativeButton("Later", null).show();
+                        showSheet("No app release yet", "This check reads the repo's latest "
+                                + "GitHub release, and none is published. Open the releases "
+                                + "page to confirm.", "Open releases",
+                                () -> AppUpdate.openReleases(MainActivity.this), "Later", null);
                     });
                     return;
                 }
@@ -963,8 +999,70 @@ public class MainActivity extends Activity {
                 status.setText("App update downloaded");
                 log("App update verified, asking to install.");
             });
-            AppUpdate.promptInstall(this, info, apk);
+            final AppUpdate.SignatureReport signature = AppUpdate.checkInstallCompatibility(this, apk);
+            if (!signature.compatible) {
+                post(() -> showUpdateConflict(info, signature));
+                return;
+            }
+            if (!AppUpdate.canRequestPackageInstalls(this)) {
+                post(() -> showSheet("Allow app installs", "Android blocks S22 Updater "
+                        + "from installing APK updates right now. Enable 'Allow from this "
+                        + "source', then return here and run Check for app updates again.",
+                        "Open setting", () -> AppUpdate.openInstallPermission(MainActivity.this),
+                        "Later", null));
+                return;
+            }
+            post(() -> showUpdateInstall(info, apk, signature));
         });
+    }
+
+    private void showUpdateInstall(final AppUpdate.Info info, final File apk,
+                                   AppUpdate.SignatureReport signature) {
+        String body = "S22 Updater " + info.versionName + " is downloaded and verified.\n\n"
+                + "Package: " + getPackageName() + "\n"
+                + "Signer: " + shortCert(signature.updateCert) + "\n\n"
+                + "Android will ask you to confirm the install.";
+        showSheet("Install app update", body, "Install", () -> {
+            try {
+                AppUpdate.install(MainActivity.this, apk);
+            } catch (Exception e) {
+                showSheet("Installer unavailable", "Android could not open the package "
+                        + "installer for this APK. Open the release page and install the APK "
+                        + "manually.", "Open releases", () -> AppUpdate.openReleases(MainActivity.this),
+                        "Close", null);
+            }
+        }, "Later", null);
+    }
+
+    private void showUpdateConflict(AppUpdate.Info info, AppUpdate.SignatureReport signature) {
+        appUpdateStatus.setText("Update blocked by package signature conflict");
+        status.setText("Update signature conflict");
+        log("App update conflict: " + signature.problem + " installed="
+                + signature.installedCert + " update=" + signature.updateCert);
+        String body = "Android rejects in-place updates when the installed app and "
+                + "update APK are signed by incompatible certificates.\n\n"
+                + "Installed signer: " + shortCert(signature.installedCert) + "\n"
+                + "Update signer: " + shortCert(signature.updateCert) + "\n\n"
+                + "v4.2 includes Android 9+ key-rotation lineage from the old local "
+                + "debug key to the release key. If Android still says package conflict, "
+                + "your installed build used a different lost key. Uninstall S22 Updater "
+                + "once, then install v4.2 from Releases. After that, future updates will "
+                + "install normally.";
+        showSheet("Package conflict", body, "Open releases",
+                () -> AppUpdate.openReleases(MainActivity.this), "App info", this::openSelfInfo);
+    }
+
+    private String shortCert(String digest) {
+        if (digest == null || digest.isEmpty()) return "unknown";
+        return digest.length() <= 16 ? digest : digest.substring(0, 16) + "...";
+    }
+
+    private void openSelfInfo() {
+        try {
+            startActivity(new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + getPackageName())));
+        } catch (Exception ignored) {
+        }
     }
 
     private void export() {

@@ -10,6 +10,8 @@ name: Release Build
 #   SIGN_STORE_PASS          keystore password
 #   SIGN_KEY_PASS            key password
 #   SIGN_ALIAS               key alias
+# The committed signing-lineage.bin migrates Android 9+ installs from the old
+# local debug key to the release key without Android's package-conflict error.
 # Without them the workflow signs with a throwaway debug key and marks the
 # release notes accordingly (that APK cannot update an existing install).
 
@@ -110,6 +112,7 @@ jobs:
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > release.keystore
             echo "SIGN_KEYSTORE=$PWD/release.keystore" >> "$GITHUB_ENV"
+            echo "SIGN_LINEAGE=$PWD/signing-lineage.bin" >> "$GITHUB_ENV"
             echo "using repository signing key"
           else
             echo "no signing secrets; using a throwaway debug key"
@@ -167,6 +170,9 @@ jobs:
             echo
             if [ -z "$KEYSTORE_B64" ]; then
               echo "> Signed with a throwaway debug key: this APK installs fresh but cannot update an existing install. Add the signing secrets and re-run for an updatable release."
+              echo
+            else
+              echo "> Signed with the release key and Android 9+ debug-to-release key lineage for one-time migration from old local builds."
               echo
             fi
             if [ -n "$PREVIOUS_TAG" ]; then

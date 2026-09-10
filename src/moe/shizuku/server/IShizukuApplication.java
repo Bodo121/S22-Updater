@@ -2,9 +2,8 @@
 //
 // Derived from RikkaApps/Shizuku-API
 // (aidl/src/main/aidl/moe/shizuku/server/IShizukuApplication.aidl, Apache-2.0).
-// The nested Stub exists because rikka.shizuku.Shizuku$1 extends it; without
-// this class the Shizuku client crashes when the binder arrives and the app
-// is never registered.
+// The nested Stub exists because rikka.shizuku.Shizuku$1 extends it; its
+// onTransact cases must match Android's generated Binder transaction IDs.
 package moe.shizuku.server;
 
 import android.os.Binder;
@@ -47,19 +46,18 @@ public interface IShizukuApplication extends IInterface {
                     reply.writeString(DESCRIPTOR);
                     return true;
                 }
-                case 1: {
+                case IBinder.FIRST_CALL_TRANSACTION + 1: {
                     data.enforceInterface(DESCRIPTOR);
-                    bindApplication(data.readBundle(getClass().getClassLoader()));
+                    bindApplication(readBundle(data));
                     return true;
                 }
-                case 2: {
+                case IBinder.FIRST_CALL_TRANSACTION + 2: {
                     data.enforceInterface(DESCRIPTOR);
                     int requestCode = data.readInt();
-                    dispatchRequestPermissionResult(requestCode,
-                            data.readBundle(getClass().getClassLoader()));
+                    dispatchRequestPermissionResult(requestCode, readBundle(data));
                     return true;
                 }
-                case 10000: {
+                case IBinder.FIRST_CALL_TRANSACTION + 10000: {
                     data.enforceInterface(DESCRIPTOR);
                     int requestUid = data.readInt();
                     int requestPid = data.readInt();
@@ -67,12 +65,19 @@ public interface IShizukuApplication extends IInterface {
                     int requestCode = data.readInt();
                     showPermissionConfirmation(requestUid, requestPid, requestPackageName,
                             requestCode);
-                    reply.writeNoException();
+                    if (reply != null) reply.writeNoException();
                     return true;
                 }
                 default:
                     return super.onTransact(code, data, reply, flags);
             }
+        }
+
+        private static Bundle readBundle(Parcel data) {
+            if (data.readInt() == 0) return null;
+            Bundle bundle = Bundle.CREATOR.createFromParcel(data);
+            bundle.setClassLoader(IShizukuApplication.class.getClassLoader());
+            return bundle;
         }
 
         private static final class Proxy implements IShizukuApplication {
@@ -96,7 +101,8 @@ public interface IShizukuApplication extends IInterface {
                     } else {
                         out.writeInt(0);
                     }
-                    remote.transact(1, out, null, IBinder.FLAG_ONEWAY);
+                    remote.transact(IBinder.FIRST_CALL_TRANSACTION + 1, out, null,
+                            IBinder.FLAG_ONEWAY);
                 } finally {
                     out.recycle();
                 }
@@ -114,7 +120,8 @@ public interface IShizukuApplication extends IInterface {
                     } else {
                         out.writeInt(0);
                     }
-                    remote.transact(2, out, null, IBinder.FLAG_ONEWAY);
+                    remote.transact(IBinder.FIRST_CALL_TRANSACTION + 2, out, null,
+                            IBinder.FLAG_ONEWAY);
                 } finally {
                     out.recycle();
                 }
@@ -132,7 +139,7 @@ public interface IShizukuApplication extends IInterface {
                     out.writeInt(requestPid);
                     out.writeString(requestPackageName);
                     out.writeInt(requestCode);
-                    remote.transact(10000, out, reply, 0);
+                    remote.transact(IBinder.FIRST_CALL_TRANSACTION + 10000, out, reply, 0);
                     reply.readException();
                 } finally {
                     out.recycle();
