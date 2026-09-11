@@ -1,5 +1,24 @@
 # Changelog
 
+## 4.9
+
+### Added
+- Session Debloat in Lab: enter a package name, inspect its system APK paths,
+  remove it for the current session, or restore it. Removal runs through
+  KernelSU su, stops the app, blocks background appops, tries Android's
+  uninstall/disable/suspend path for user 0, then overlay-whiteouts the system
+  APKs in init's namespace and restarts userspace so the package cannot launch
+  for the session. Verified partitions are never modified; a real reboot
+  restores stock files.
+
+### Fixed
+- Lab pending verification is now stored before issuing the userspace restart,
+  so verification survives the app being killed.
+- Lab controls stay locked until root is actually granted.
+- Embedded Lab runner avoids fragile stdout parsing for invalid allowlist names.
+- App updates now use the `sha256` value from `app-update.json` even when a
+  release has no `SHA256SUMS` asset.
+
 ## 4.8
 
 ### Added

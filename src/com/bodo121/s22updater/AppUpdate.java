@@ -90,6 +90,9 @@ final class AppUpdate {
         info.versionName = manifest.optString("versionName", info.tag);
         info.apkName = manifest.optString("apk", "");
         info.apkUrl = manifest.optString("apkUrl", apkUrl == null ? "" : apkUrl);
+        info.apkSha256 = manifest.optString("sha256", "").trim();
+        if (!info.apkSha256.isEmpty() && !info.apkSha256.matches("[a-fA-F0-9]{64}"))
+            throw new java.io.IOException("Update manifest has invalid APK SHA-256");
         if (sumsUrl != null && !sumsUrl.isEmpty()) {
             String sums = Network.text(sumsUrl);
             for (String line : sums.split("\n")) {

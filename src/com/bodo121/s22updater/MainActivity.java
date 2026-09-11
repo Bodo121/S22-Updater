@@ -31,12 +31,13 @@ public class MainActivity extends Activity {
     private TextView status, flowHint, rootStatus, shizukuStatus, managerStatus,
             kernelStatus, activityLog, changelog, appUpdateStatus, installPermStatus,
             stepFeed, stepPayload, stepRoot, stepKsu, deviceInfo, homeLog,
-            labStatus, labLog;
+            labStatus, labLog, debloatStatus, debloatLog;
     private final TextView[] labSteps = new TextView[LateActivate.STEPS];
     private final String[] labStepText = new String[LateActivate.STEPS];
     private ProgressBar progress;
-    private EditText feedInput;
-    private Button flowAction, checkAppUpdate, labRun;
+    private EditText feedInput, debloatPackage;
+    private Button flowAction, checkAppUpdate, labRun, debloatInspect, debloatRemove,
+            debloatRestore;
     private Switch automaticKernel, automaticAppUpdate, labFullRestart;
     private SharedPreferences preferences;
     private Payload selected;
@@ -143,6 +144,7 @@ public class MainActivity extends Activity {
         log("Ready. One button walks the whole flow: update info, payload, exploit, KernelSU.");
         if (preferences.getBoolean("auto_app_update", false)) checkAppUpdate();
         maybeVerifyLab();
+        maybeVerifyDebloat();
     }
 
     @Override protected void onResume() {
@@ -150,6 +152,7 @@ public class MainActivity extends Activity {
         pollShizuku();
         refreshInstallPermission();
         maybeVerifyLab();
+        maybeVerifyDebloat();
     }
 
     /**
@@ -425,10 +428,37 @@ public class MainActivity extends Activity {
                 + "A real reboot still wipes volatile root — this replays boot-time "
                 + "module work for the current session. The restart closes this app; "
                 + "reopen it to verify.", 13, muted, false);
+
+        LinearLayout debloat = card(pages[2], "SESSION DEBLOAT");
+        debloatStatus = text(debloat, "Locked — grant root first.", 14, muted, false);
+        debloatPackage = new EditText(this);
+        debloatPackage.setText(preferences.getString("debloat_pkg", ""));
+        debloatPackage.setHint("com.samsung.android.app.example");
+        debloatPackage.setSingleLine(true);
+        debloatPackage.setTextColor(ink);
+        debloatPackage.setHintTextColor(muted);
+        debloatPackage.setTextSize(14);
+        debloatPackage.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_URI);
+        debloatPackage.setBackground(shape(bg, 12));
+        debloatPackage.setPadding(dp(12), dp(12), dp(12), dp(12));
+        debloat.addView(debloatPackage, new LinearLayout.LayoutParams(-1, -2));
+        debloatInspect = action(debloat, "Inspect package", this::inspectDebloatPackage);
+        debloatRemove = action(debloat, "Remove for this session", this::removeDebloatPackage);
+        debloatRestore = action(debloat, "Restore package", this::restoreDebloatPackage);
+        text(debloat, "Remove uses KernelSU su to stop the app, block background appops, "
+                + "uninstall/disable it for user 0, overlay-whiteout its system APKs in "
+                + "init's namespace, then restart userspace. Verified partitions are not "
+                + "modified; reboot restores stock files, while restore reverses the user "
+                + "state and removes whiteouts for the current session.", 13, muted, false);
+
         LinearLayout output = card(pages[2], "LAB OUTPUT");
         labLog = text(output, "Runner output appears here.", 12, ink, false);
         labLog.setTypeface(Typeface.MONOSPACE);
         labLog.setTextIsSelectable(true);
+        debloatLog = text(output, "Debloat output appears here.", 12, ink, false);
+        debloatLog.setTypeface(Typeface.MONOSPACE);
+        debloatLog.setTextIsSelectable(true);
     }
 
     /** Step states: run (●), done (✓), skip (–), fail (✕). */
@@ -451,17 +481,40 @@ public class MainActivity extends Activity {
         labSteps[index].setTypeface(null, bold ? Typeface.BOLD : Typeface.NORMAL);
     }
 
+    private void labResetSteps() {
+        for (int i = 0; i < LateActivate.STEPS; i++) {
+            if (labSteps[i] == null) continue;
+            String value = "○  " + LateActivate.STEP_NAMES[i];
+            labStepText[i] = value;
+            labSteps[i].setText(value);
+            labSteps[i].setTextColor(muted);
+            labSteps[i].setTypeface(null, Typeface.NORMAL);
+        }
+    }
+
     /** Lab is usable only after a root check grants access. */
     private void refreshLab() {
         if (labRun == null) return;
         boolean open = rootGranted && !busy;
         labRun.setEnabled(open);
         labRun.setAlpha(open ? 1f : .5f);
-        if (labFullRestart != null) labFullRestart.setEnabled(!busy);
+        if (labFullRestart != null) labFullRestart.setEnabled(rootGranted && !busy);
+        Button[] debloatButtons = {debloatInspect, debloatRemove, debloatRestore};
+        for (Button button : debloatButtons) {
+            if (button == null) continue;
+            button.setEnabled(open);
+            button.setAlpha(open ? 1f : .5f);
+        }
+        if (debloatPackage != null) debloatPackage.setEnabled(rootGranted && !busy);
         if (labStatus != null && !busy) {
             labStatus.setText(rootGranted ? "Ready — KernelSU su will run every step."
                     : "Locked — tap Check root in Home first. Lab unlocks after root is granted.");
             labStatus.setTextColor(rootGranted ? ink : muted);
+        }
+        if (debloatStatus != null && !busy) {
+            debloatStatus.setText(rootGranted ? "Ready — enter a package and inspect first."
+                    : "Locked — grant root first.");
+            debloatStatus.setTextColor(rootGranted ? ink : muted);
         }
     }
 
@@ -483,14 +536,15 @@ public class MainActivity extends Activity {
         final String mode = (labFullRestart != null && labFullRestart.isChecked())
                 ? "android" : "zygote";
         Runnable start = () -> job("Running late activation…", () -> {
-            for (int i = 0; i < LateActivate.STEPS; i++) {
-                final int index = i;
-                post(() -> labMark(index, "run", "Queued"));
-            }
+            post(this::labResetSteps);
             try {
                 LateActivate.run(transport, getCacheDir(), mode,
                         (index, st, detail) -> {
                             final String text = detail;
+                            if (index == 5 && "run".equals(st)) {
+                                preferences.edit().putString("lab_pending",
+                                        mode + "|" + System.currentTimeMillis()).commit();
+                            }
                             post(() -> {
                                 labMark(index, st, text);
                                 labAppend("[" + st + "] " + LateActivate.STEP_NAMES[index]
@@ -498,14 +552,13 @@ public class MainActivity extends Activity {
                             });
                         });
             } catch (Exception e) {
+                preferences.edit().remove("lab_pending").apply();
                 post(() -> {
                     labStatus.setText("Late activation failed: " + e.getMessage());
                     log("Late activation failed: " + e.getMessage());
                 });
                 throw e;
             }
-            preferences.edit().putString("lab_pending",
-                    mode + "|" + System.currentTimeMillis()).apply();
             post(() -> {
                 labStatus.setText("Restart issued (" + mode + ") — reopen the app to verify.");
                 log("Late activation restart issued (" + mode + "). "
@@ -574,6 +627,196 @@ public class MainActivity extends Activity {
                 labMark(5, active ? "done" : "fail",
                         active ? "Verified after restart" : "Degraded — see output");
                 showSheet(active ? "Modules active" : "Activation degraded", text,
+                        "OK", null, null, null);
+            });
+        });
+    }
+
+    private String debloatPkg() throws Exception {
+        String pkg = debloatPackage == null ? "" : debloatPackage.getText().toString().trim();
+        Debloat.requirePackage(pkg);
+        preferences.edit().putString("debloat_pkg", pkg).apply();
+        return pkg;
+    }
+
+    private Shell.Transport ksuTransportOrExplain() {
+        if (!rootGranted) {
+            showSheet("Root needed first", "Session Debloat unlocks after Check root "
+                    + "access reports granted. It runs through KernelSU su and will not "
+                    + "use the CVE helper as the active root path.", "Check root",
+                    this::checkRoot, "Close", null);
+            return null;
+        }
+        Shell.Transport transport = pickTransport();
+        if (!(transport instanceof Shell.Su)) {
+            showSheet("KernelSU su needed", "Debloat needs KernelSU su. Load KernelSU "
+                    + "from Home first, then come back here.", "OK", null, null, null);
+            return null;
+        }
+        return transport;
+    }
+
+    private String debloatRestartMode() {
+        return labFullRestart != null && labFullRestart.isChecked() ? "android" : "zygote";
+    }
+
+    private void debloatAppend(String line) {
+        if (debloatLog == null) return;
+        String previous = debloatLog.getText().toString();
+        if (previous.equals("Debloat output appears here.")) previous = "";
+        String next = previous + line + "\n";
+        if (next.length() > 6000) next = "…" + next.substring(next.length() - 5999);
+        debloatLog.setText(next);
+    }
+
+    private void inspectDebloatPackage() {
+        if (busy) return;
+        Shell.Transport transport = ksuTransportOrExplain();
+        if (transport == null) return;
+        final String pkg;
+        try {
+            pkg = debloatPkg();
+        } catch (Exception e) {
+            error(e);
+            return;
+        }
+        job("Inspecting " + pkg + "…", () -> {
+            String report = Debloat.inspect(transport, getCacheDir(), pkg);
+            post(() -> {
+                debloatStatus.setText("Inspect complete: " + pkg);
+                debloatAppend("$ inspect " + pkg);
+                debloatAppend(report);
+                log("Debloat inspect " + pkg + ":\n" + report);
+            });
+        });
+    }
+
+    private void removeDebloatPackage() {
+        if (busy) return;
+        Shell.Transport transport = ksuTransportOrExplain();
+        if (transport == null) return;
+        final String pkg;
+        try {
+            pkg = debloatPkg();
+        } catch (Exception e) {
+            error(e);
+            return;
+        }
+        final String mode = debloatRestartMode();
+        showSheet("Remove for this session", "This will stop " + pkg + ", block its "
+                + "background execution, uninstall/disable it for user 0 where Android "
+                + "allows it, overlay-whiteout its system APK files in init's namespace, "
+                + "then restart userspace (" + mode + ").\n\nVerified partitions are not changed; a real reboot restores stock files.",
+                "Remove", () -> job("Removing " + pkg + "…", () -> {
+                    preferences.edit().putString("debloat_pending",
+                            "remove|" + pkg + "|" + mode + "|" + System.currentTimeMillis()).commit();
+                    try {
+                        String out = Debloat.remove(transport, getCacheDir(), pkg, mode);
+                        post(() -> {
+                            debloatStatus.setText("Restart issued for " + pkg + " — reopen to verify.");
+                            debloatAppend("$ remove " + pkg + " " + mode);
+                            debloatAppend(out);
+                            log("Debloat remove issued for " + pkg + " (" + mode + ")");
+                        });
+                    } catch (Exception e) {
+                        preferences.edit().remove("debloat_pending").apply();
+                        throw e;
+                    }
+                }), "Back", null);
+    }
+
+    private void restoreDebloatPackage() {
+        if (busy) return;
+        Shell.Transport transport = ksuTransportOrExplain();
+        if (transport == null) return;
+        final String pkg;
+        try {
+            pkg = debloatPkg();
+        } catch (Exception e) {
+            error(e);
+            return;
+        }
+        final String mode = debloatRestartMode();
+        showSheet("Restore package", "This removes S22 Updater's overlay whiteouts "
+                + "for " + pkg + ", re-enables/install-existing for user 0, resets "
+                + "background appops, then restarts userspace (" + mode + ").",
+                "Restore", () -> job("Restoring " + pkg + "…", () -> {
+                    preferences.edit().putString("debloat_pending",
+                            "restore|" + pkg + "|" + mode + "|" + System.currentTimeMillis()).commit();
+                    try {
+                        String out = Debloat.restore(transport, getCacheDir(), pkg, mode);
+                        post(() -> {
+                            debloatStatus.setText("Restore restart issued for " + pkg + " — reopen to verify.");
+                            debloatAppend("$ restore " + pkg + " " + mode);
+                            debloatAppend(out);
+                            log("Debloat restore issued for " + pkg + " (" + mode + ")");
+                        });
+                    } catch (Exception e) {
+                        preferences.edit().remove("debloat_pending").apply();
+                        throw e;
+                    }
+                }), "Back", null);
+    }
+
+    private void maybeVerifyDebloat() {
+        String pending = preferences.getString("debloat_pending", "");
+        if (pending.isEmpty()) return;
+        if (busy) {
+            ui.postDelayed(() -> {
+                if (!closed && !busy) maybeVerifyDebloat();
+            }, 5000);
+            return;
+        }
+        String[] parts = pending.split("\\|", 4);
+        if (parts.length < 4) {
+            preferences.edit().remove("debloat_pending").apply();
+            return;
+        }
+        long at = 0;
+        try {
+            at = Long.parseLong(parts[3]);
+        } catch (Exception ignored) {
+        }
+        if (System.currentTimeMillis() - at < 45000) {
+            ui.postDelayed(() -> {
+                if (!closed && !busy) maybeVerifyDebloat();
+            }, 50000);
+            return;
+        }
+        verifyDebloat(parts[0], parts[1], parts[2]);
+    }
+
+    private void verifyDebloat(String action, String pkg, String mode) {
+        job("Verifying debloat result…", () -> {
+            if (!Shell.suGrantsRoot(getCacheDir())) {
+                preferences.edit().remove("debloat_pending").apply();
+                post(() -> {
+                    rootGranted = false;
+                    rootStatus.setText("Root: not granted");
+                    debloatStatus.setText("Cannot verify — root is gone (real reboot?)");
+                    refreshLab();
+                    showSheet("Cannot verify", "Root is gone, so the session ended. "
+                            + "A real reboot restores stock files and clears volatile root.",
+                            "OK", null, null, null);
+                });
+                return;
+            }
+            rootGranted = true;
+            String report = Debloat.verify(new Shell.Su(), getCacheDir(), pkg);
+            preferences.edit().remove("debloat_pending").apply();
+            final String text = report;
+            final boolean removed = text.contains("USER0=removed");
+            final boolean restored = text.contains("USER0=present");
+            final boolean ok = "remove".equals(action) ? removed : restored;
+            post(() -> {
+                rootStatus.setText("Root: granted");
+                refreshLab();
+                debloatStatus.setText(ok ? "Debloat verified: " + action + " " + pkg
+                        : "Debloat needs attention: " + pkg);
+                debloatAppend("$ verify " + pkg + " after " + action + " (" + mode + ")");
+                debloatAppend(text);
+                log("Debloat verify " + action + " " + pkg + ":\n" + text);
+                showSheet(ok ? "Debloat verified" : "Debloat needs attention", text,
                         "OK", null, null, null);
             });
         });

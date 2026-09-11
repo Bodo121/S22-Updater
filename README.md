@@ -1,4 +1,4 @@
-# S22 Updater 4.8
+# S22 Updater 4.9
 
 A rebuilt control center for the personal IONSTACK-S22 / KernelSU phone project.
 
@@ -9,7 +9,7 @@ Get the latest release (APK + SHA256SUMS + app-update.json) from
 
 ```sh
 sha256sum -c SHA256SUMS
-adb install -r S22-Updater-v4.8.apk
+adb install -r S22-Updater-v4.9.apk
 ```
 
 Android 9 or later is required.
@@ -74,9 +74,11 @@ everything on the v2 key updates normally forever.
 - **Log:** session diagnostics with a copy button; independent GitHub
   changelog refresh, so a changelog failure cannot block the feed.
 - **Lab (experimental):** late activation for reboot-required KernelSU
-  modules — mounts in init's namespace, module scripts, userspace restart,
-  step tracking, auto-verify on reopen. Unlocks after root is granted; runs
-  only through KernelSU su. See `README` section below.
+  modules plus Session Debloat. Debloat stops a package, blocks background
+  appops, uninstalls/disables/suspends it for user 0 where Android allows it,
+  overlay-whiteouts its system APKs in init's namespace, restarts userspace,
+  and verifies on reopen. Unlocks after root is granted; runs only through
+  KernelSU su. See the sections below.
 - **Settings:** editable HTTPS feed URL, reset, Shizuku tools and handshake
   diagnosis, payload export, app updates with install-permission status, and
   automatic KernelSU setup option.
@@ -163,6 +165,26 @@ The restart closes the app; reopening runs verification automatically (su,
 module presence, init-namespace overlays, runner log tail). Steps that have
 nothing to do report *skipped*, not failed. Boot-image, fstab, AVB, and
 early-init modules remain impossible on a locked bootloader.
+
+### Lab: session debloat (experimental)
+
+Enter a package name in Lab, inspect it first, then **Remove for this
+session**. The app stages a hash-verified runner to `/data/local/tmp`, then
+runs this through KernelSU su:
+
+1. Capture system APK paths from `cmd package path`.
+2. Force-stop the package and block background appops.
+3. Try `cmd package uninstall --user 0`, disable-user and suspend.
+4. Overlay-whiteout every system APK path in init's mount namespace.
+5. Restart zygote or full Android userspace.
+6. Verify on reopen that user 0 no longer sees the package.
+
+This is deliberately session-only: verified partitions are not modified and a
+real reboot restores stock files. It is stronger than merely hiding a launcher
+icon because the package is stopped, background-restricted, removed/disabled
+from user 0 when possible, and its backing system APKs disappear from the
+restarted framework view. Restore reverses the appops/user state and removes
+S22 Updater's whiteouts for the current session.
 
 The module URL, release and hash are pinned in `KernelSetup.java`, using the
 pair documented in [KSU-S22](https://github.com/Bodo121/KSU-S22). Module loading
