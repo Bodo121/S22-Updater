@@ -20,6 +20,19 @@
 - Root check now automatically completes the KernelSU stage when the KSU module
   is already loaded and the app has a valid KSU su grant.
 
+### Fixed
+- KernelSU stage auto-completes whenever root is granted and the module is
+  already live: presence detection is tolerant (`contains`, not exact match),
+  a successful root check re-marks the stage without re-running the loader,
+  and the loader short-circuits before downloading when sysfs already shows
+  the module — no more `insmod` failure on an already-loaded module.
+- KernelSU setup via a rootless Shizuku shell now explains itself (insmod
+  needs real root) instead of reporting a bare loader error.
+- Action icons: full label mapping so Load/Install, changelog, restore,
+  manager/Shizuku, dismiss, and theme-preset buttons no longer fall back to
+  the gear; added a dedicated close icon, and the hero button icon now
+  follows the active step.
+
 ## 5.0
 
 ### Removed

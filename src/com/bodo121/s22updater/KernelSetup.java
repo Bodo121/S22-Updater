@@ -17,13 +17,27 @@ final class KernelSetup {
     }
 
     /**
+     * Tolerant presence check: insmod reports EEXIST ("File exists") when the
+     * module is already live, and loader output varies, so sysfs presence —
+     * matched loosely — is the verdict, never the loader's exit code.
+     */
+    static boolean isLoaded(Shell.Transport transport, File scratch) {
+        try {
+            String out = status(transport, scratch);
+            return out != null && out.contains("loaded");
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
+    /**
      * Loads the module through the given transport. Prefers the IONSTACK root
      * helper when a helper path is known (the KDP module needs the manual
      * loader); falls back to a plain insmod.
      */
     static String load(String model, Shell.Transport transport, File scratch, String helperPath)
             throws Exception {
-        if ("loaded".equals(status(transport, scratch)))
+        if (isLoaded(transport, scratch))
             return "KernelSU is already loaded for this boot";
         String release = transport.run("uname -r", scratch);
         if (!"SM-S901B".equals(model) || !RELEASE.equals(release))
@@ -70,7 +84,7 @@ final class KernelSetup {
             } catch (Exception e) {
                 lastError = e.getMessage() == null ? "loader failed" : e.getMessage();
             }
-            if ("loaded".equals(status(transport, scratch)))
+            if (isLoaded(transport, scratch))
                 return "KernelSU is loaded and verified (loader warned: " + lastError + ")";
             throw new IOException("KernelSU load failed: " + lastError);
         } finally {

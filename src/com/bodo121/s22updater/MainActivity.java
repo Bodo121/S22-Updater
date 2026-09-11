@@ -875,6 +875,7 @@ public class MainActivity extends Activity {
             case "done": flowAction.setText("Open KernelSU Manager"); break;
             default: flowAction.setText("Working…"); break;
         }
+        applyIcon(flowAction, flowAction.getText().toString(), true);
         flowHint.setText(ksuLoaded ? "KernelSU is active for this boot."
                 : rooted() ? "Root verified. Next: load KernelSU."
                 : transportReady() ? "Shell ready. Next: run the exploit."
@@ -1047,12 +1048,14 @@ public class MainActivity extends Activity {
             });
             if (ok) {
                 Shell.Transport transport = new Shell.Su();
-                if (autoKernel) setupKernel(transport);
-                else {
-                    String loaded = KernelSetup.status(transport, getCacheDir());
-                    final boolean present = "loaded".equals(loaded);
-                    if (present) ksuLoaded = true;
-                    saveVolatileState();
+                // Root granted: if the module is already live, autocomplete the
+                // KernelSU stage instead of re-running the loader.
+                if (KernelSetup.isLoaded(transport, getCacheDir())) ksuLoaded = true;
+                saveVolatileState();
+                if (autoKernel && !ksuLoaded) {
+                    setupKernel(transport);
+                } else {
+                    final boolean present = ksuLoaded;
                     post(() -> kernelStatus.setText(present
                             ? "Kernel module: loaded" : "Kernel module: not loaded"));
                 }
@@ -1157,8 +1160,13 @@ public class MainActivity extends Activity {
                 post(() -> { kernelStatus.setText(result); status.setText(result); saveStatus(result); log(result); });
             }
         } catch (Exception e) {
-            post(() -> kernelStatus.setText("KernelSU setup failed: " + e.getMessage()));
-            throw e;
+            String hint = (transport instanceof Shell.ShizukuShell) && !rootGranted
+                    ? " Loading needs real root (su) — a Shizuku shell cannot insmod. "
+                      + "Grant root first, then retry."
+                    : "";
+            final String message = "KernelSU setup failed: " + e.getMessage() + hint;
+            post(() -> kernelStatus.setText(message));
+            throw new IOException(message, e);
         }
     }
 
@@ -1643,17 +1651,23 @@ public class MainActivity extends Activity {
         int fill = primary ? accent : blend(accent, bg, .88f);
         button.setBackground(new RippleDrawable(ColorStateList.valueOf(blend(accent, surface, .55f)),
                 shape(fill, 14), null));
-        int icon = iconFor(label);
-        if (icon != 0) {
-            try {
-                Drawable drawable = getResources().getDrawable(icon).mutate();
-                drawable.setTint(primary ? bg : accent);
-                button.setCompoundDrawablesWithIntrinsicBounds(drawable, null, null, null);
-                button.setCompoundDrawablePadding(dp(8));
-            } catch (Exception ignored) {
-            }
-        }
+        applyIcon(button, label, primary);
         return button;
+    }
+
+    private void applyIcon(Button button, String label, boolean primary) {
+        int icon = iconFor(label);
+        if (icon == 0) {
+            button.setCompoundDrawablesWithIntrinsicBounds(0, 0, 0, 0);
+            return;
+        }
+        try {
+            Drawable drawable = getResources().getDrawable(icon).mutate();
+            drawable.setTint(primary ? bg : accent);
+            button.setCompoundDrawablesWithIntrinsicBounds(drawable, null, null, null);
+            button.setCompoundDrawablePadding(dp(8));
+        } catch (Exception ignored) {
+        }
     }
 
     private int iconFor(String label) {
@@ -1661,16 +1675,27 @@ public class MainActivity extends Activity {
         if (l.equals("home")) return drawableId("ic_ms_home");
         if (l.equals("log")) return drawableId("ic_ms_article");
         if (l.equals("settings")) return drawableId("ic_ms_settings");
-        if (l.contains("update") || l.contains("refresh") || l.contains("check for"))
-            return drawableId("ic_ms_sync");
-        if (l.contains("download")) return drawableId("ic_ms_download");
-        if (l.contains("run") || l.contains("exploit")) return drawableId("ic_ms_play");
-        if (l.contains("root") || l.contains("authorize") || l.contains("permission"))
-            return drawableId("ic_ms_security");
-        if (l.contains("open")) return drawableId("ic_ms_play");
-        if (l.contains("save") || l.contains("export")) return drawableId("ic_ms_save");
-        if (l.contains("copy") || l.contains("share")) return drawableId("ic_ms_share");
+        if (l.equals("system") || l.equals("blue") || l.equals("green")
+                || l.equals("purple") || l.equals("orange"))
+            return drawableId("ic_ms_palette");
         if (l.contains("theme") || l.contains("color")) return drawableId("ic_ms_palette");
+        if (l.contains("changelog") || l.contains("change log")) return drawableId("ic_ms_article");
+        if (l.contains("update") || l.contains("refresh") || l.contains("check for")
+                || l.contains("restore"))
+            return drawableId("ic_ms_sync");
+        if (l.contains("uninstall")) return drawableId("ic_ms_close");
+        if (l.contains("save") || l.contains("export")) return drawableId("ic_ms_save");
+        if (l.contains("root") || l.contains("authorize") || l.contains("permission")
+                || l.contains("allow") || l.contains("shizuku") || l.contains("manager"))
+            return drawableId("ic_ms_security");
+        if (l.contains("download") || l.contains("load") || l.contains("install"))
+            return drawableId("ic_ms_download");
+        if (l.contains("run") || l.contains("exploit")) return drawableId("ic_ms_play");
+        if (l.contains("open") || l.contains("launch")) return drawableId("ic_ms_play");
+        if (l.contains("copy") || l.contains("share")) return drawableId("ic_ms_share");
+        if (l.contains("close") || l.equals("later")
+                || l.equals("ok") || l.contains("cancel") || l.contains("dismiss"))
+            return drawableId("ic_ms_close");
         return drawableId("ic_ms_settings");
     }
     private int drawableId(String name) { return getResources().getIdentifier(name, "drawable", getPackageName()); }
