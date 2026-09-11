@@ -31,7 +31,10 @@ public class MainActivity extends Activity {
     private final Button[] tabs = new Button[3];
     private TextView status, flowHint, rootStatus, shizukuStatus, managerStatus,
             kernelStatus, activityLog, changelog, appUpdateStatus, installPermStatus,
-            stepFeed, stepPayload, stepRoot, stepKsu, deviceInfo, homeLog;
+            stepFeed, stepPayload, stepRoot, stepKsu, deviceInfo, homeLog,
+            rootChip, appearanceStatus, logEmpty;
+    private LinearLayout statusCardView;
+    private FlowStepper flowStepper;
     private ProgressBar progress;
     private EditText feedInput;
     private Button flowAction, checkAppUpdate;
@@ -42,8 +45,9 @@ public class MainActivity extends Activity {
     private boolean busy, rootGranted, shizukuGranted, exploitRooted, ksuLoaded;
     private final StringBuilder runLog = new StringBuilder();
     private volatile boolean closed;
-    private int bg, surface, ink, muted, accent, border, pageIndex;
+    private int bg, surface, ink, muted, accent, border, success, danger, warning, pageIndex;
     private boolean restoredProgress;
+    private String failedStep = "";
 
     static final String HELPER_DEVICE_PATH = "/data/local/tmp/cve-2026-43499-root";
     static final String EXPLOIT_DEVICE_PATH = "/data/local/tmp/cve-2026-43499";
@@ -97,11 +101,16 @@ public class MainActivity extends Activity {
 
         LinearLayout shell = column();
         shell.setBackgroundColor(bg);
-        LinearLayout header = column();
+        LinearLayout header = row();
+        header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(dp(22), dp(18), dp(22), dp(12));
-        text(header, "S22 / CONTROL CENTER", 12, accent, true);
-        text(header, "Your device. Your updates.", 25, ink, true);
-        text(header, "IONSTACK • Version " + AppUpdate.installedName(this), 12, muted, false);
+        LinearLayout title = column();
+        text(title, "S22 / CONTROL CENTER", 12, accent, true);
+        text(title, "Your device. Your updates.", 25, ink, true);
+        text(title, "IONSTACK • Version " + AppUpdate.installedName(this), 12, muted, false);
+        header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        rootChip = chip("Root: Not granted", muted);
+        header.addView(rootChip, new LinearLayout.LayoutParams(-2, dp(40)));
         shell.addView(header);
         FrameLayout content = new FrameLayout(this);
         shell.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -147,14 +156,25 @@ public class MainActivity extends Activity {
     }
 
     private void applyPalette(boolean dark) {
-        int systemAccent = resolveColor(android.R.attr.colorAccent,
-                Color.parseColor(dark ? "#99BBFF" : "#2459CE"));
-        accent = systemAccent;
-        bg = blend(systemAccent, dark ? Color.BLACK : Color.WHITE, dark ? .88f : .92f);
-        surface = blend(systemAccent, dark ? Color.BLACK : Color.WHITE, dark ? .76f : .985f);
+        String theme = preferences.getString("theme_color", "system");
+        int chosen;
+        switch (theme) {
+            case "blue": chosen = Color.parseColor("#3F6FE5"); break;
+            case "green": chosen = Color.parseColor("#2E7D32"); break;
+            case "purple": chosen = Color.parseColor("#7B4DFF"); break;
+            case "orange": chosen = Color.parseColor("#C86418"); break;
+            default: chosen = resolveColor(android.R.attr.colorAccent,
+                    Color.parseColor(dark ? "#99BBFF" : "#2459CE")); break;
+        }
+        accent = chosen;
+        bg = blend(accent, dark ? Color.BLACK : Color.WHITE, dark ? .88f : .92f);
+        surface = blend(accent, dark ? Color.BLACK : Color.WHITE, dark ? .76f : .985f);
         ink = Color.parseColor(dark ? "#F1F4FA" : "#14171F");
         muted = blend(ink, surface, .42f);
-        border = blend(systemAccent, surface, dark ? .68f : .78f);
+        border = blend(accent, surface, dark ? .68f : .78f);
+        success = Color.parseColor(dark ? "#81C784" : "#2E7D32");
+        danger = Color.parseColor(dark ? "#FFB4AB" : "#B3261E");
+        warning = Color.parseColor(dark ? "#FFD180" : "#A15C00");
     }
 
     private int resolveColor(int attr, int fallback) {
@@ -233,6 +253,7 @@ public class MainActivity extends Activity {
         }
         String session = preferences.getString("activity_log", "");
         if (!session.isEmpty()) activityLog.setText(session);
+        updateLogEmpty();
         updateFlow();
     }
 
@@ -296,6 +317,7 @@ public class MainActivity extends Activity {
                                 saveVolatileState();
                                 shizukuStatus.setText("Shizuku: binder died");
                                 log("Shizuku binder died — restart Shizuku if needed");
+                                updateFlow();
                             });
                         }
                     });
@@ -416,26 +438,32 @@ public class MainActivity extends Activity {
                 final boolean granted = running && Shell.shizukuGranted();
                 post(() -> {
                     shizukuGranted = granted;
+                    saveVolatileState();
                     if (granted) shizukuStatus.setText("Shizuku: authorized");
                     else if (running) shizukuStatus.setText("Shizuku: awaiting authorization");
                     else shizukuStatus.setText(isPackageInstalled("moe.shizuku.manager")
                             ? "Shizuku: service not connected"
                             : "Shizuku: not installed");
+                    updateFlow();
                 });
             }
         }).start();
     }
 
     private void buildHome() {
-        LinearLayout statusCard = card(pages[0], "STATUS");
-        status = text(statusCard, "Ready to check", 21, ink, true);
-        flowHint = text(statusCard, "One button walks the whole flow: update info, payload, exploit, KernelSU.", 13, muted, false);
+        statusCardView = card(pages[0], "ROOT FLOW");
+        status = text(statusCardView, "Ready to check", 24, ink, true);
+        flowHint = text(statusCardView, "Six steps, one action. The active step is highlighted; failures stay local with retry.", 13, muted, false);
+        flowStepper = new FlowStepper(this);
+        flowStepper.setColors(ink, muted, accent, success, danger, surface);
+        statusCardView.addView(flowStepper, new LinearLayout.LayoutParams(-1, dp(238)));
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        progress.setMax(1000);
         progress.setIndeterminateTintList(ColorStateList.valueOf(accent));
         progress.setProgressTintList(ColorStateList.valueOf(accent));
         progress.setVisibility(View.GONE);
-        statusCard.addView(progress, new LinearLayout.LayoutParams(-1, dp(8)));
-        flowAction = action(statusCard, "Check for updates", this::primaryAction);
+        statusCardView.addView(progress, new LinearLayout.LayoutParams(-1, dp(8)));
+        flowAction = action(statusCardView, "Check for updates", this::primaryAction);
         LinearLayout steps = card(pages[0], "PROGRESS");
         stepFeed = text(steps, "○  Update info", 14, muted, false);
         stepPayload = text(steps, "○  Payload", 14, muted, false);
@@ -461,18 +489,21 @@ public class MainActivity extends Activity {
 
     private void buildLog() {
         LinearLayout history = card(pages[1], "SESSION LOG");
+        logEmpty = text(history, "No activity yet — run the flow or check for updates.", 13, muted, false);
         activityLog = text(history, "", 13, ink, false);
         activityLog.setTypeface(Typeface.MONOSPACE);
         activityLog.setTextIsSelectable(true);
+        updateLogEmpty();
         action(history, "Copy diagnostics", () -> {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
             clipboard.setPrimaryClip(ClipData.newPlainText("S22 diagnostics", Build.MODEL + " / " + Build.DISPLAY
                     + "\n" + activityLog.getText()));
             Toast.makeText(this, "Diagnostics copied", Toast.LENGTH_SHORT).show();
         });
+        action(history, "Share diagnostics", this::shareDiagnostics);
         LinearLayout changes = card(pages[1], "PROJECT CHANGELOG");
         action(changes, "Refresh changelog", this::loadChangelog);
-        changelog = text(changes, "Recent commits appear here after refreshing.", 14, muted, false);
+        changelog = text(changes, "No changelog loaded yet. Tap Refresh changelog.", 14, muted, false);
     }
 
     private void buildSettings() {
@@ -502,6 +533,23 @@ public class MainActivity extends Activity {
             resetFeed();
             log("Default feed restored.");
         });
+        LinearLayout appearance = card(pages[2], "APPEARANCE");
+        appearanceStatus = text(appearance, "Theme color: " + themeLabel(), 14, muted, false);
+        LinearLayout themeRow = row();
+        themeRow.setGravity(Gravity.CENTER_VERTICAL);
+        String[] themeNames = {"System", "Blue", "Green", "Purple", "Orange"};
+        String[] themeValues = {"system", "blue", "green", "purple", "orange"};
+        for (int i = 0; i < themeNames.length; i++) {
+            final String name = themeNames[i];
+            final String value = themeValues[i];
+            Button button = makeButton(name, false);
+            button.setTextSize(11);
+            button.setOnClickListener(v -> setThemeChoice(value));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(42), 1);
+            if (i > 0) params.leftMargin = dp(6);
+            themeRow.addView(button, params);
+        }
+        appearance.addView(themeRow, spaced());
         LinearLayout updater = card(pages[2], "APP UPDATES");
         appUpdateStatus = text(updater, "S22 Updater " + AppUpdate.installedName(this)
                 + " — app update status unknown", 14, muted, false);
@@ -558,6 +606,17 @@ public class MainActivity extends Activity {
         refreshControls();
     }
 
+    private String themeLabel() {
+        String value = preferences.getString("theme_color", "system");
+        return value.substring(0, 1).toUpperCase(Locale.ROOT) + value.substring(1);
+    }
+
+    private void setThemeChoice(String value) {
+        preferences.edit().putString("theme_color", value).apply();
+        Toast.makeText(this, "Theme color: " + value, Toast.LENGTH_SHORT).show();
+        recreate();
+    }
+
     private void showPage(int page) {
         pageIndex = Math.max(0, Math.min(2, page));
         preferences.edit().putInt("page", pageIndex).apply();
@@ -579,6 +638,7 @@ public class MainActivity extends Activity {
     private void job(String message, Work work) {
         if (busy || closed) return;
         busy = true;
+        failedStep = "";
         status.setText(message);
         saveStatus(message);
         progress.setIndeterminate(true);
@@ -607,9 +667,15 @@ public class MainActivity extends Activity {
 
     private void error(Exception e) {
         String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        failedStep = flowStep();
         status.setText(message);
         saveStatus(message);
         log("Failed: " + message);
+        updateFlow();
+        if (statusCardView != null) statusCardView.animate().translationX(dp(5)).setDuration(55)
+                .withEndAction(() -> statusCardView.animate().translationX(-dp(5)).setDuration(55)
+                        .withEndAction(() -> statusCardView.animate().translationX(0).setDuration(55).start()).start())
+                .start();
         showSheet("Action failed", message, "OK", null, null, null);
     }
 
@@ -668,7 +734,46 @@ public class MainActivity extends Activity {
         String previous = activityLog.getText().toString();
         String next = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()) + "  " + value + "\n\n" + previous;
         activityLog.setText(next.substring(0, Math.min(12000, next.length())));
+        activityLog.setAlpha(.72f);
+        activityLog.animate().alpha(1f).setDuration(180).start();
         preferences.edit().putString("activity_log", activityLog.getText().toString()).apply();
+        updateLogEmpty();
+    }
+
+    private void updateLogEmpty() {
+        if (logEmpty == null || activityLog == null) return;
+        boolean empty = activityLog.getText().toString().trim().isEmpty();
+        logEmpty.setVisibility(empty ? View.VISIBLE : View.GONE);
+        activityLog.setVisibility(empty ? View.GONE : View.VISIBLE);
+    }
+
+    private void shareDiagnostics() {
+        try {
+            File dir = new File(getCacheDir(), "share");
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("No share cache");
+            File file = new File(dir, "diagnostics.txt");
+            String body = "S22 Updater diagnostics\n"
+                    + "Version: " + AppUpdate.installedName(this) + "\n"
+                    + "Device: " + Build.MODEL + " / " + Build.DISPLAY + "\n"
+                    + "Boot-scoped state: root=" + rootGranted + " exploit=" + exploitRooted
+                    + " ksu=" + ksuLoaded + " shizuku=" + shizukuGranted + "\n"
+                    + "Selected payload: " + (selected == null ? "none" : selected.id) + "\n\n"
+                    + "--- visible status ---\n" + status.getText() + "\n\n"
+                    + "--- run log ---\n" + runLog + "\n\n"
+                    + "--- session log ---\n" + activityLog.getText() + "\n";
+            try (FileOutputStream out = new FileOutputStream(file)) {
+                out.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                out.getFD().sync();
+            }
+            Intent intent = new Intent(Intent.ACTION_SEND);
+            intent.setType("text/plain");
+            intent.putExtra(Intent.EXTRA_SUBJECT, "S22 Updater diagnostics");
+            intent.putExtra(Intent.EXTRA_STREAM, ApkProvider.diagnosticsUri(this, file));
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(intent, "Share diagnostics"));
+        } catch (Exception e) {
+            error(e);
+        }
     }
 
     private File localFile(Payload p) throws Exception { return PayloadStore.file(getFilesDir(), p.id); }
@@ -741,13 +846,26 @@ public class MainActivity extends Activity {
 
     private void markStep(TextView view, boolean done, boolean current, String label) {
         view.setText((done ? "✓  " : current ? "●  " : "○  ") + label);
-        view.setTextColor(done || current ? ink : muted);
+        view.setTextColor(done ? success : current ? accent : muted);
         view.setTypeface(null, done || current ? Typeface.BOLD : Typeface.NORMAL);
+    }
+
+    private int stepIndex(String step) {
+        switch (step) {
+            case "feed": return 0;
+            case "download": return 1;
+            case "transport": return 2;
+            case "run": return 3;
+            case "ksu": return 4;
+            case "done": return 5;
+            default: return 0;
+        }
     }
 
     private void updateFlow() {
         if (flowAction == null) return;
         String step = busy ? "" : flowStep();
+        String stateStep = step.isEmpty() ? flowStep() : step;
         switch (step) {
             case "feed": flowAction.setText("Check for updates"); break;
             case "download": flowAction.setText("Download payload"); break;
@@ -771,9 +889,57 @@ public class MainActivity extends Activity {
                 "Root access" + (rooted() ? " — granted" : ""));
         markStep(stepKsu, ksuLoaded, "ksu".equals(step),
                 "KernelSU" + (ksuLoaded ? " — loaded" : ""));
+        if (flowStepper != null) {
+            flowStepper.setState(feedReady(), payloadReady(), transportReady(), rooted(),
+                    ksuLoaded, ksuLoaded, stepIndex(stateStep), failedStep.isEmpty() ? -1 : stepIndex(failedStep));
+            if (busy) flowStepper.pulse();
+        }
+        if (statusCardView != null) {
+            int fill = failedStep.isEmpty() ? (ksuLoaded ? blend(success, surface, .9f)
+                    : busy ? blend(accent, surface, .9f) : surface)
+                    : blend(danger, surface, .9f);
+            statusCardView.setBackground(shape(fill, 22));
+            if (busy) statusCardView.animate().alpha(.94f).setDuration(250)
+                    .withEndAction(() -> statusCardView.animate().alpha(1f).setDuration(320).start()).start();
+        }
+        updateRootChip();
         String device = Build.MODEL + " • Android " + Build.VERSION.RELEASE + "\n" + Build.DISPLAY;
         if (feedReady()) device += "\nPayload: " + selected.id;
         deviceInfo.setText(device);
+    }
+
+    private void updateRootChip() {
+        if (rootChip == null) return;
+        int color;
+        if (ksuLoaded && rootGranted) {
+            rootChip.setText("  Root + KSU Active  ");
+            color = success;
+            rootChip.setBackground(shape(blend(success, surface, .86f), 999));
+        } else if (rootGranted || exploitRooted) {
+            rootChip.setText("  Root Active  ");
+            color = success;
+            rootChip.setBackground(shape(blend(success, surface, .88f), 999));
+        } else if (shizukuGranted) {
+            rootChip.setText("  Shizuku Ready  ");
+            color = accent;
+            rootChip.setBackground(shape(blend(accent, surface, .88f), 999));
+        } else {
+            rootChip.setText("  Root: Not granted  ");
+            color = muted;
+            rootChip.setBackground(shape(blend(muted, surface, .9f), 999));
+        }
+        rootChip.setTextColor(color);
+        Drawable[] drawables = rootChip.getCompoundDrawables();
+        if (drawables[0] != null) drawables[0].setTint(color);
+    }
+
+    private void updateProgress(long read, long total, String label) {
+        progress.setAlpha(.45f);
+        progress.setIndeterminate(total <= 0);
+        if (total > 0) progress.setProgress((int) (read * 1000 / total));
+        progress.animate().alpha(1f).setDuration(160).start();
+        status.setText(label);
+        saveStatus(label);
     }
 
     private void runAppend(String line) {
@@ -834,12 +1000,8 @@ public class MainActivity extends Activity {
                     int percent = total > 0 ? (int) (read * 100 / total) : -1;
                     if (percent == last[0]) return;
                     last[0] = percent;
-                    post(() -> {
-                        progress.setIndeterminate(total <= 0);
-                        progress.setProgress(percent);
-                        status.setText("Downloading • " + (total > 0 ? percent + "%" : read + " bytes"));
-                        saveStatus(status.getText().toString());
-                    });
+                    post(() -> updateProgress(read, total,
+                            "Downloading • " + (total > 0 ? percent + "%" : read + " bytes")));
                 });
                 PayloadStore.verify(part, p.size, p.sha);
                 PayloadStore.replace(part, target);
@@ -863,10 +1025,12 @@ public class MainActivity extends Activity {
                 result = Shell.suRootProbe(getCacheDir());
                 granted = Shell.outputGrantsRoot(result);
             } catch (Exception e) { result = e.getMessage(); }
+            final boolean ksuSeen = result != null && result.contains("KSU=loaded");
             final boolean ok = granted;
             final String detail = result;
             post(() -> {
                 rootGranted = ok;
+                if (ok && ksuSeen) ksuLoaded = true;
                 saveVolatileState();
                 rootStatus.setText(ok ? "Root: granted" : "Root: not granted");
                 status.setText(ok ? "Root check passed" : "Root access not granted"
@@ -878,7 +1042,8 @@ public class MainActivity extends Activity {
                                 .setDuration(130).start()).start();
                 updateManager();
                 log("Root check: " + detail);
-                if (!ok) kernelStatus.setText("Kernel module: root access needed to check");
+                if (ok && ksuSeen) kernelStatus.setText("Kernel module: loaded");
+                else if (!ok) kernelStatus.setText("Kernel module: root access needed to check");
             });
             if (ok) {
                 Shell.Transport transport = new Shell.Su();
@@ -999,7 +1164,6 @@ public class MainActivity extends Activity {
 
     private void adoptKsuSu(String result) {
         ksuLoaded = true;
-        updateManager();
         boolean suNow = false;
         try {
             suNow = Shell.suGrantsRoot(getCacheDir());
@@ -1009,6 +1173,7 @@ public class MainActivity extends Activity {
         saveVolatileState();
         final boolean suReady = suNow;
         post(() -> {
+            updateManager();
             kernelStatus.setText(result);
             status.setText(result);
             saveStatus(result);
@@ -1295,12 +1460,8 @@ public class MainActivity extends Activity {
             });
             final File apk = AppUpdate.download(this, info, new Network.Progress() {
                 @Override public void update(final long read, final long total) {
-                    post(() -> {
-                        progress.setIndeterminate(total <= 0);
-                        if (total > 0) progress.setProgress((int) (read * 1000 / total));
-                        status.setText("Downloading app update • " + read + " bytes");
-                        saveStatus(status.getText().toString());
-                    });
+                    post(() -> updateProgress(read, total,
+                            "Downloading app update • " + read + " bytes"));
                 }
             });
             post(() -> {
@@ -1429,10 +1590,30 @@ public class MainActivity extends Activity {
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private LinearLayout column() { LinearLayout v = new LinearLayout(this); v.setOrientation(LinearLayout.VERTICAL); return v; }
+    private LinearLayout row() { LinearLayout v = new LinearLayout(this); v.setOrientation(LinearLayout.HORIZONTAL); return v; }
     private GradientDrawable shape(int color, int radius) {
         GradientDrawable drawable = new GradientDrawable();
         drawable.setColor(color); drawable.setCornerRadius(dp(radius)); drawable.setStroke(dp(1), border);
         return drawable;
+    }
+    private TextView chip(String value, int color) {
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(12);
+        view.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        view.setGravity(Gravity.CENTER);
+        view.setTextColor(color);
+        view.setPadding(dp(10), 0, dp(10), 0);
+        view.setBackground(shape(blend(color, surface, .9f), 999));
+        int icon = drawableId("ic_ms_security");
+        if (icon != 0) {
+            Drawable d = getResources().getDrawable(icon);
+            d = d.mutate();
+            d.setTint(color);
+            view.setCompoundDrawablesWithIntrinsicBounds(d, null, null, null);
+            view.setCompoundDrawablePadding(dp(6));
+        }
+        return view;
     }
     private LinearLayout.LayoutParams spaced() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
@@ -1465,7 +1646,7 @@ public class MainActivity extends Activity {
         int icon = iconFor(label);
         if (icon != 0) {
             try {
-                Drawable drawable = getResources().getDrawable(icon);
+                Drawable drawable = getResources().getDrawable(icon).mutate();
                 drawable.setTint(primary ? bg : accent);
                 button.setCompoundDrawablesWithIntrinsicBounds(drawable, null, null, null);
                 button.setCompoundDrawablePadding(dp(8));
@@ -1477,16 +1658,22 @@ public class MainActivity extends Activity {
 
     private int iconFor(String label) {
         String l = label.toLowerCase(Locale.ROOT);
+        if (l.equals("home")) return drawableId("ic_ms_home");
+        if (l.equals("log")) return drawableId("ic_ms_article");
+        if (l.equals("settings")) return drawableId("ic_ms_settings");
         if (l.contains("update") || l.contains("refresh") || l.contains("check for"))
-            return android.R.drawable.ic_popup_sync;
+            return drawableId("ic_ms_sync");
+        if (l.contains("download")) return drawableId("ic_ms_download");
+        if (l.contains("run") || l.contains("exploit")) return drawableId("ic_ms_play");
         if (l.contains("root") || l.contains("authorize") || l.contains("permission"))
-            return android.R.drawable.ic_secure;
-        if (l.contains("open")) return android.R.drawable.ic_menu_view;
-        if (l.contains("save") || l.contains("export")) return android.R.drawable.ic_menu_save;
-        if (l.contains("copy")) return android.R.drawable.ic_menu_share;
-        if (l.contains("restore")) return android.R.drawable.ic_menu_revert;
-        return android.R.drawable.ic_menu_manage;
+            return drawableId("ic_ms_security");
+        if (l.contains("open")) return drawableId("ic_ms_play");
+        if (l.contains("save") || l.contains("export")) return drawableId("ic_ms_save");
+        if (l.contains("copy") || l.contains("share")) return drawableId("ic_ms_share");
+        if (l.contains("theme") || l.contains("color")) return drawableId("ic_ms_palette");
+        return drawableId("ic_ms_settings");
     }
+    private int drawableId(String name) { return getResources().getIdentifier(name, "drawable", getPackageName()); }
     private Button action(LinearLayout parent, String label, Runnable callback) {
         Button button = makeButton(label, true);
         button.setOnClickListener(v -> {

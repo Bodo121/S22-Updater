@@ -1,5 +1,25 @@
 # Changelog
 
+## 5.1
+
+### Added
+- Hero six-step Home flow visual: connected numbered/checkmark stepper for
+  feed, download, root, exploit, KernelSU, and Manager.
+- Persistent root/KSU status chip in the header.
+- Customizable Material-style color presets: System, Blue, Green, Purple,
+  Orange.
+- Diagnostics share/export from the Log tab.
+- Cohesive app-owned Material Symbols-style outlined vector icons for tabs and
+  actions.
+
+### Changed
+- Semantic contained state colors: accent for active work, green for completed
+  flow/KSU/root states, red for contained failures.
+- Motion polish for tab changes, buttons, progress transitions, logs, root
+  grants, and stepper state changes.
+- Root check now automatically completes the KernelSU stage when the KSU module
+  is already loaded and the app has a valid KSU su grant.
+
 ## 5.0
 
 ### Removed

@@ -1,4 +1,4 @@
-# S22 Updater 5.0
+# S22 Updater 5.1
 
 A clean control center for the personal IONSTACK-S22 / KernelSU phone project.
 The app keeps the one-button root/update flow and persists progress across app
@@ -11,7 +11,7 @@ Get the current APK, `SHA256SUMS`, and `app-update.json` from
 
 ```sh
 sha256sum -c SHA256SUMS
-adb install -r S22-Updater-v5.0.apk
+adb install -r S22-Updater-v5.1.apk
 ```
 
 Android 9 or later is required.
@@ -41,16 +41,20 @@ persistent signing reference without pushing secrets or private fingerprints.
 
 ## Interface
 
-- **Home:** one context-aware action: check feed -> download payload -> check
-  root -> run exploit -> load KernelSU -> open Manager. Progress, root state,
-  device info, and live exploit output are restored after app restarts.
-- **Log:** session diagnostics and changelog refresh.
-- **Settings:** feed URL, Shizuku tools, payload export, automatic KernelSU
-  setup option, app updater, and install-permission status.
+- **Home:** one context-aware action plus a hero six-step visual stepper: check
+  feed -> download payload -> check root -> run exploit -> load KernelSU -> open
+  Manager. The root/KSU chip stays visible in the header, progress is colored
+  semantically, and failures stay red/contained on the active flow card.
+- **Log:** session diagnostics, changelog refresh, and share/export diagnostics
+  for sending logs directly.
+- **Settings:** feed URL, customizable Material-style color palette, Shizuku
+  tools, payload export, automatic KernelSU setup option, app updater, and
+  install-permission status.
 
-The UI uses a View-based Material-style system-accent palette, rounded/elevated
-cards, cohesive action icons, and smooth tab/button/root-state transitions. This
-repo does not use Gradle/Compose, so dynamic color is implemented through the
+The UI uses a View-based Material-style system-accent palette, optional custom
+color families, rounded/elevated cards, app-owned Material Symbols-style
+outlined icons, and smooth tab/button/root-state/progress transitions. This repo
+does not use Gradle/Compose, so dynamic color is implemented through the
 platform accent color with static light/dark fallbacks rather than Compose's
 `dynamicColorScheme` API.
 
