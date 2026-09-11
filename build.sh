@@ -13,7 +13,8 @@
 #   SIGN_EXPECTED_CERT_SHA256 (permanent release cert, see README)
 #
 # The applicationId is frozen: com.bodo121.s22updater. Every release must use
-# the same package name and the same release key, or Android blocks updates.
+# the same package name and the same release key (v2 since v4.8, see README),
+# or Android blocks updates.
 set -euo pipefail
 shopt -s globstar nullglob
 fail() { echo "build: ERROR: $*" >&2; exit 1; }

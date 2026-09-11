@@ -1,4 +1,4 @@
-# S22 Updater 4.7
+# S22 Updater 4.8
 
 A rebuilt control center for the personal IONSTACK-S22 / KernelSU phone project.
 
@@ -9,17 +9,17 @@ Get the latest release (APK + SHA256SUMS + app-update.json) from
 
 ```sh
 sha256sum -c SHA256SUMS
-adb install -r S22-Updater-v4.2.apk
+adb install -r S22-Updater-v4.8.apk
 ```
 
 Android 9 or later is required.
 
-> Signing break from v3: v4 is signed with a new key (the v3 signing key was a
-> local-only file and is gone), so uninstall v3 before installing v4. v4.2 also
-> carries Android 9+ signing lineage from the local v4 debug key to the release
-> key, so old local v4 debug builds can migrate without the package-conflict
-> error. If your installed APK used any other lost key, Android still requires a
-> one-time uninstall; future release-key updates then work normally.
+> Signing breaks (platform rule, not a bug): the v3 key is lost, and the v4.x
+> build-machine keystore was lost with a wiped workspace, so v4.8 starts a new
+> key (v2). Uninstall any older build before installing v4.8 — one time only.
+> The app detects a signer change before installing and walks you through it
+> instead of failing. The v2 keystore is backed up in GitHub Actions secrets,
+> so this rotation never happens again.
 
 ## App updates
 
@@ -44,8 +44,8 @@ One-time setup for updatable releases — repository secrets:
 | `SIGN_ALIAS` | key alias |
 
 Without them the release is signed with a throwaway key (fresh installs only).
-With them, `signing-lineage.bin` is included automatically so Android 9+ can
-accept the release key as the successor to the old local debug key.
+With them, the release uses the backed-up v2 key — no lineage needed, since
+the v2 key starts its own line.
 
 ### Permanent app identity
 
@@ -55,14 +55,15 @@ every installed app:
 | Item | Value |
 | --- | --- |
 | Package name | `com.bodo121.s22updater` (`build.sh` fails otherwise) |
-| Release cert SHA-256 | `8588a91199d914eb638776a6144705c3b1db24f0ec90472cd963aa25237ffeb5` |
-| Keystore | `release.keystore` (git-ignored — keep a backup outside the repo) |
-| Rotation proof | `signing-lineage.bin` (committed) |
+| Release cert SHA-256 (v2, since 4.8) | `6ba56772f7e69a226a983f8d06849602caae2c3d58a22717b35ccc6ff39712b7` |
+| Previous cert (v4.2–v4.7) | `8588a91199d914eb638776a6144705c3b1db24f0ec90472cd963aa25237ffeb5` (key lost) |
+| Keystore | `release.keystore` (git-ignored — backed up in Actions secrets + offline) |
+| Old rotation proof | `signing-lineage.bin` (kept for history; not used by v2 builds) |
 
-Set `SIGN_EXPECTED_CERT_SHA256=8588a911…` (full digest above) when building a
-release: the build fails instead of shipping a wrong-key APK. The v3 signing
-key is lost, so v3 installs need the app's one-time "Uninstall old app" flow;
-everything signed with the release key updates normally forever.
+Set `SIGN_EXPECTED_CERT_SHA256=6ba56772…` (full digest above) when building a
+release: the build fails instead of shipping a wrong-key APK. Any install
+signed by an older key needs the app's one-time "Uninstall old app" flow;
+everything on the v2 key updates normally forever.
 
 ## Interface and workflows
 
@@ -72,6 +73,10 @@ everything signed with the release key updates normally forever.
   (`com.rifsxd.ksunext`), device card, and live run log.
 - **Log:** session diagnostics with a copy button; independent GitHub
   changelog refresh, so a changelog failure cannot block the feed.
+- **Lab (experimental):** late activation for reboot-required KernelSU
+  modules — mounts in init's namespace, module scripts, userspace restart,
+  step tracking, auto-verify on reopen. Unlocks after root is granted; runs
+  only through KernelSU su. See `README` section below.
 - **Settings:** editable HTTPS feed URL, reset, Shizuku tools and handshake
   diagnosis, payload export, app updates with install-permission status, and
   automatic KernelSU setup option.
@@ -131,6 +136,33 @@ Enable **Load KernelSU after a successful root check** to perform that setup
 after checking root. After running IONSTACK, return to Home and tap the root
 check. This requires root usable by this app: root available only to an adb
 helper is not the same as an app-authorized `su` session.
+
+### Lab: late module activation (experimental)
+
+A real reboot wipes volatile root, so reboot-required modules can never see a
+real boot. Lab replays the parts that matter **after** KernelSU is loaded,
+all through KernelSU su:
+
+1. Verify the module is loaded and su grants uid 0.
+2. Stage a hash-verified runner to `/data/local/tmp/ksu-late-activate.sh`.
+3. Apply each allowlisted module's `late-mounts.sh` in init's namespace.
+4. Run each module's `late-post.sh`.
+5. Restart zygote (or full userspace `stop`/`start`), then verify on reopen.
+
+Opt a module in (as root, e.g. via `su`):
+
+```sh
+echo myoverlay > /data/adb/late-modules.allow
+# /data/adb/modules/myoverlay/late-mounts.sh — mounts only, idempotent:
+#   grep -q ' /system ' /proc/1/mountinfo || mount -t overlay overlay \
+#     -o lowerdir=/system,upperdir=/data/ovr/upper,workdir=/data/ovr/work /system
+# /data/adb/modules/myoverlay/late-post.sh   — optional post-mount scripts
+```
+
+The restart closes the app; reopening runs verification automatically (su,
+module presence, init-namespace overlays, runner log tail). Steps that have
+nothing to do report *skipped*, not failed. Boot-image, fstab, AVB, and
+early-init modules remain impossible on a locked bootloader.
 
 The module URL, release and hash are pinned in `KernelSetup.java`, using the
 pair documented in [KSU-S22](https://github.com/Bodo121/KSU-S22). Module loading

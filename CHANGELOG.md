@@ -1,5 +1,32 @@
 # Changelog
 
+## 4.8
+
+### Added
+- Experimental Lab tab: late module activation for reboot-required KernelSU
+  modules. Replays boot-time module work for the current session — mounts in
+  init's namespace, module scripts, then a zygote or full userspace restart —
+  with per-step tracking (run/done/skipped/failed) and automatic verification
+  when you reopen the app. Locked until Check root access reports granted;
+  every step runs through KernelSU su. Opt-in per module via
+  `/data/adb/late-modules.allow` plus `late-mounts.sh` / `late-post.sh` in the
+  module dir.
+
+### Changed
+- After KernelSU loads, the app re-verifies su and switches the privileged
+  shell to KernelSU su; the exploit helper stays bootstrap-only.
+- New signing key (v2): the v4.x build-machine keystore was lost with a wiped
+  workspace, so v4.8 starts a new key. One-time uninstall from any older
+  build, then updates are normal again. The keystore is now also backed up in
+  GitHub Actions secrets.
+
+### Fixed
+- Update flow, once and for all: install permission is re-checked at install
+  time (not just before download), the package-conflict sheet no longer tells
+  a stale key story — it explains any signer change and the one-time
+  uninstall — and header/about versions now read the installed version
+  instead of hardcoded strings.
+
 ## 4.7
 
 ### Fixed

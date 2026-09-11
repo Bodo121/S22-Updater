@@ -26,15 +26,18 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<Button> actions = new ArrayList<>();
     private final List<Payload> payloads = new ArrayList<>();
-    private final LinearLayout[] pages = new LinearLayout[3];
-    private final Button[] tabs = new Button[3];
+    private final LinearLayout[] pages = new LinearLayout[4];
+    private final Button[] tabs = new Button[4];
     private TextView status, flowHint, rootStatus, shizukuStatus, managerStatus,
             kernelStatus, activityLog, changelog, appUpdateStatus, installPermStatus,
-            stepFeed, stepPayload, stepRoot, stepKsu, deviceInfo, homeLog;
+            stepFeed, stepPayload, stepRoot, stepKsu, deviceInfo, homeLog,
+            labStatus, labLog;
+    private final TextView[] labSteps = new TextView[LateActivate.STEPS];
+    private final String[] labStepText = new String[LateActivate.STEPS];
     private ProgressBar progress;
     private EditText feedInput;
-    private Button flowAction, checkAppUpdate;
-    private Switch automaticKernel, automaticAppUpdate;
+    private Button flowAction, checkAppUpdate, labRun;
+    private Switch automaticKernel, automaticAppUpdate, labFullRestart;
     private SharedPreferences preferences;
     private Payload selected;
     private File exportFile;
@@ -103,7 +106,7 @@ public class MainActivity extends Activity {
         header.setPadding(dp(22), dp(18), dp(22), dp(12));
         text(header, "S22 / CONTROL CENTER", 12, accent, true);
         text(header, "Your device. Your updates.", 25, ink, true);
-        text(header, "IONSTACK • Version 4.6", 12, muted, false);
+        text(header, "IONSTACK • Version " + AppUpdate.installedName(this), 12, muted, false);
         shell.addView(header);
         FrameLayout content = new FrameLayout(this);
         shell.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -117,11 +120,12 @@ public class MainActivity extends Activity {
         }
         buildHome();
         buildLog();
+        buildLab(state);
         buildSettings();
         LinearLayout navigation = new LinearLayout(this);
         navigation.setBackgroundColor(surface);
         navigation.setPadding(dp(6), dp(8), dp(6), dp(8));
-        String[] names = {"Home", "Log", "Settings"};
+        String[] names = {"Home", "Log", "Lab", "Settings"};
         for (int i = 0; i < tabs.length; i++) {
             final int index = i;
             tabs[i] = makeButton(names[i], false);
@@ -138,12 +142,38 @@ public class MainActivity extends Activity {
         watchShizukuBinder();
         log("Ready. One button walks the whole flow: update info, payload, exploit, KernelSU.");
         if (preferences.getBoolean("auto_app_update", false)) checkAppUpdate();
+        maybeVerifyLab();
     }
 
     @Override protected void onResume() {
         super.onResume();
         pollShizuku();
         refreshInstallPermission();
+        maybeVerifyLab();
+    }
+
+    /**
+     * If a Lab restart was issued, verify once the session settles. Fires on
+     * relaunch after the restart killed this process, or on resume if the app
+     * somehow survived it.
+     */
+    private void maybeVerifyLab() {
+        String pending = preferences.getString("lab_pending", "");
+        if (pending.isEmpty() || busy) return;
+        String[] parts = pending.split("\\|", 2);
+        long at = 0;
+        try {
+            if (parts.length > 1) at = Long.parseLong(parts[1]);
+        } catch (Exception ignored) {
+        }
+        if (System.currentTimeMillis() - at < 45000) {
+            post(() -> log("Lab restart issued — verification starts once the session settles."));
+            ui.postDelayed(() -> {
+                if (!closed && !busy) maybeVerifyLab();
+            }, 50000);
+            return;
+        }
+        verifyLateActivation(parts[0]);
     }
 
     /** Shows whether Android currently lets this app install APK updates. */
@@ -358,8 +388,199 @@ public class MainActivity extends Activity {
         changelog = text(changes, "Recent commits appear here after refreshing.", 14, muted, false);
     }
 
+    /**
+     * Experimental late module activation. The whole card stays locked until
+     * a root check reports granted: every privileged step runs through
+     * KernelSU su, never through the exploit bootstrap helper.
+     */
+    private void buildLab(Bundle state) {
+        LinearLayout lab = card(pages[2], "LATE MODULE ACTIVATION — EXPERIMENTAL");
+        labStatus = text(lab, rootGranted ? "Ready — KernelSU su will run every step."
+                : "Locked — tap Check root in Home first. Lab unlocks after root is granted.",
+                14, muted, false);
+        for (int i = 0; i < LateActivate.STEPS; i++) {
+            labSteps[i] = text(lab, "○  " + LateActivate.STEP_NAMES[i], 14, muted, false);
+            labStepText[i] = labSteps[i].getText().toString();
+        }
+        if (state != null && state.containsKey("lab_steps")) {
+            String[] saved = state.getStringArray("lab_steps");
+            if (saved != null) {
+                for (int i = 0; i < Math.min(saved.length, LateActivate.STEPS); i++) {
+                    if (saved[i] != null) {
+                        labStepText[i] = saved[i];
+                        labSteps[i].setText(saved[i]);
+                    }
+                }
+            }
+        }
+        labFullRestart = new Switch(this);
+        labFullRestart.setText("Full userspace restart (stop/start) instead of zygote only");
+        labFullRestart.setTextColor(ink);
+        labFullRestart.setPadding(0, dp(12), 0, dp(4));
+        lab.addView(labFullRestart, new LinearLayout.LayoutParams(-1, -2));
+        labRun = action(lab, "Run late activation", this::runLateActivation);
+        text(lab, "Opt-in contract: allowlist at " + LateActivate.ALLOW_PATH
+                + " (one module name per line). Each allowlisted module may provide "
+                + "late-mounts.sh (mounts, init namespace) and late-post.sh (scripts). "
+                + "A real reboot still wipes volatile root — this replays boot-time "
+                + "module work for the current session. The restart closes this app; "
+                + "reopen it to verify.", 13, muted, false);
+        LinearLayout output = card(pages[2], "LAB OUTPUT");
+        labLog = text(output, "Runner output appears here.", 12, ink, false);
+        labLog.setTypeface(Typeface.MONOSPACE);
+        labLog.setTextIsSelectable(true);
+    }
+
+    /** Step states: run (●), done (✓), skip (–), fail (✕). */
+    private void labMark(int index, String state, String detail) {
+        if (index < 0 || index >= LateActivate.STEPS || labSteps[index] == null) return;
+        String label = LateActivate.STEP_NAMES[index]
+                + (detail == null || detail.isEmpty() ? "" : " — " + detail);
+        String marked;
+        int color;
+        boolean bold;
+        switch (state) {
+            case "done": marked = "✓  " + label; color = ink; bold = true; break;
+            case "run": marked = "●  " + label; color = ink; bold = true; break;
+            case "fail": marked = "✕  " + label; color = 0xFFB00020; bold = true; break;
+            default: marked = "–  " + label; color = muted; bold = false; break;
+        }
+        labStepText[index] = marked;
+        labSteps[index].setText(marked);
+        labSteps[index].setTextColor(color);
+        labSteps[index].setTypeface(null, bold ? Typeface.BOLD : Typeface.NORMAL);
+    }
+
+    /** Lab is usable only after a root check grants access. */
+    private void refreshLab() {
+        if (labRun == null) return;
+        boolean open = rootGranted && !busy;
+        labRun.setEnabled(open);
+        labRun.setAlpha(open ? 1f : .5f);
+        if (labFullRestart != null) labFullRestart.setEnabled(!busy);
+        if (labStatus != null && !busy) {
+            labStatus.setText(rootGranted ? "Ready — KernelSU su will run every step."
+                    : "Locked — tap Check root in Home first. Lab unlocks after root is granted.");
+            labStatus.setTextColor(rootGranted ? ink : muted);
+        }
+    }
+
+    private void runLateActivation() {
+        if (busy) return;
+        if (!rootGranted) {
+            showSheet("Root needed first", "Lab unlocks after Check root access in "
+                    + "Home reports granted. Every Lab step runs through KernelSU su.",
+                    "Check root", this::checkRoot, "Close", null);
+            return;
+        }
+        final Shell.Transport transport = pickTransport();
+        if (!(transport instanceof Shell.Su)) {
+            showSheet("KernelSU su needed", "Late activation runs through KernelSU su, "
+                    + "not the exploit helper. Load KernelSU first (Home walks you there).",
+                    "OK", null, null, null);
+            return;
+        }
+        final String mode = (labFullRestart != null && labFullRestart.isChecked())
+                ? "android" : "zygote";
+        Runnable start = () -> job("Running late activation…", () -> {
+            for (int i = 0; i < LateActivate.STEPS; i++) {
+                final int index = i;
+                post(() -> labMark(index, "run", "Queued"));
+            }
+            try {
+                LateActivate.run(transport, getCacheDir(), mode,
+                        (index, st, detail) -> {
+                            final String text = detail;
+                            post(() -> {
+                                labMark(index, st, text);
+                                labAppend("[" + st + "] " + LateActivate.STEP_NAMES[index]
+                                        + (text.isEmpty() ? "" : ": " + text));
+                            });
+                        });
+            } catch (Exception e) {
+                post(() -> {
+                    labStatus.setText("Late activation failed: " + e.getMessage());
+                    log("Late activation failed: " + e.getMessage());
+                });
+                throw e;
+            }
+            preferences.edit().putString("lab_pending",
+                    mode + "|" + System.currentTimeMillis()).apply();
+            post(() -> {
+                labStatus.setText("Restart issued (" + mode + ") — reopen the app to verify.");
+                log("Late activation restart issued (" + mode + "). "
+                        + "Reopen the app; verification runs automatically.");
+            });
+        });
+        if ("android".equals(mode)) {
+            showSheet("App will close", "A full userspace restart kills every app, "
+                    + "including this one. Reopen S22 Updater afterwards — "
+                    + "verification runs automatically.", "Restart now", start, "Back", null);
+        } else {
+            showSheet("Restarting zygote", "Zygote (and this app) will restart so the "
+                    + "new module state takes effect. Reopen S22 Updater afterwards — "
+                    + "verification runs automatically.", "Restart now", start, "Back", null);
+        }
+    }
+
+    private void labAppend(String line) {
+        if (labLog == null) return;
+        String previous = labLog.getText().toString();
+        if (previous.equals("Runner output appears here.")) previous = "";
+        String next = previous + line + "\n";
+        if (next.length() > 6000) next = "…" + next.substring(next.length() - 5999);
+        labLog.setText(next);
+    }
+
+    /** Runs on launch/resume when a restart was issued: proves root survived. */
+    private void verifyLateActivation(String mode) {
+        job("Verifying late activation…", () -> {
+            boolean granted;
+            String probe;
+            try {
+                probe = Shell.runLocal(new String[]{"su", "-c", "id"}, getCacheDir(), 15000);
+                granted = probe.matches("(?s).*\\buid=0\\b.*");
+            } catch (Exception e) {
+                granted = false;
+                probe = e.getMessage();
+            }
+            final boolean ok = granted;
+            final String probeText = probe;
+            post(() -> {
+                rootGranted = ok;
+                rootStatus.setText(ok ? "Root: granted" : "Root: not granted");
+                refreshLab();
+            });
+            if (!ok) {
+                preferences.edit().remove("lab_pending").apply();
+                post(() -> {
+                    labStatus.setText("Session ended before verification (reboot?). Re-run the flow.");
+                    log("Late-activation verify: no root (" + probeText + "). Nothing persisted — expected after a real reboot.");
+                    showSheet("Session ended", "No root after the restart — a real "
+                            + "reboot wipes volatile root, so there is nothing to verify. "
+                            + "Re-run the flow from Home.", "OK", null, null, null);
+                });
+                return;
+            }
+            String report = LateActivate.verify(new Shell.Su(), getCacheDir());
+            final String text = report;
+            preferences.edit().remove("lab_pending").apply();
+            final boolean active = text.contains("RESULT=active");
+            post(() -> {
+                labStatus.setText(active ? "Late activation verified active."
+                        : "Late activation degraded — see output.");
+                for (String line : text.split("\n")) labAppend(line);
+                log("Late-activation verify (" + mode + "):\n" + text);
+                labMark(5, active ? "done" : "fail",
+                        active ? "Verified after restart" : "Degraded — see output");
+                showSheet(active ? "Modules active" : "Activation degraded", text,
+                        "OK", null, null, null);
+            });
+        });
+    }
+
     private void buildSettings() {
-        LinearLayout settings = card(pages[2], "FEED SETTINGS");
+        LinearLayout settings = card(pages[3], "FEED SETTINGS");
         text(settings, "Targets feed URL", 17, ink, true);
         feedInput = new EditText(this);
         feedInput.setText(preferences.getString("feed_url", FEED));
@@ -385,7 +606,7 @@ public class MainActivity extends Activity {
             resetFeed();
             log("Default feed restored.");
         });
-        LinearLayout updater = card(pages[2], "APP UPDATES");
+        LinearLayout updater = card(pages[3], "APP UPDATES");
         appUpdateStatus = text(updater, "S22 Updater " + AppUpdate.installedName(this)
                 + " — app update status unknown", 14, muted, false);
         installPermStatus = text(updater, "", 13, muted, false);
@@ -403,10 +624,10 @@ public class MainActivity extends Activity {
         automaticAppUpdate.setOnCheckedChangeListener((button, checked) ->
                 preferences.edit().putBoolean("auto_app_update", checked).apply());
         updater.addView(automaticAppUpdate, new LinearLayout.LayoutParams(-1, -2));
-        LinearLayout tools = card(pages[2], "SHIZUKU TOOLS");
+        LinearLayout tools = card(pages[3], "SHIZUKU TOOLS");
         action(tools, "Open Shizuku app", this::openShizuku);
         action(tools, "Diagnose Shizuku handshake", this::diagnoseShizuku);
-        LinearLayout payloadCard = card(pages[2], "PAYLOAD FILE");
+        LinearLayout payloadCard = card(pages[3], "PAYLOAD FILE");
         action(payloadCard, "Export downloaded payload", () -> {
             if (selected == null) {
                 Toast.makeText(this, "Check for updates first", Toast.LENGTH_SHORT).show();
@@ -415,7 +636,7 @@ public class MainActivity extends Activity {
             export();
         });
         text(payloadCard, "Saves the verified payload to a file you choose.", 13, muted, false);
-        LinearLayout options = card(pages[2], "OPTIONS");
+        LinearLayout options = card(pages[3], "OPTIONS");
         automaticKernel = new Switch(this);
         automaticKernel.setText("Load KernelSU after a successful root check");
         automaticKernel.setTextColor(ink);
@@ -425,8 +646,8 @@ public class MainActivity extends Activity {
                 preferences.edit().putBoolean("auto_kernel", checked).apply());
         options.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
         text(options, "When enabled, a successful root check also loads the matching module. It skips a module already loaded.", 13, muted, false);
-        LinearLayout about = card(pages[2], "ABOUT THIS BUILD");
-        text(about, "S22 Updater 4.7", 20, ink, true);
+        LinearLayout about = card(pages[3], "ABOUT THIS BUILD");
+        text(about, "S22 Updater " + AppUpdate.installedName(this), 20, ink, true);
         TextView identity = text(about, "com.bodo121.s22updater", 13, muted, false);
         identity.setTextIsSelectable(true);
         text(about, "System light/dark theme • Android 9+\nDownloads stay local until staged. Root is volatile: reboot clears it.", 14, muted, false);
@@ -440,7 +661,7 @@ public class MainActivity extends Activity {
     }
 
     private void showPage(int page) {
-        pageIndex = Math.max(0, Math.min(2, page));
+        pageIndex = Math.max(0, Math.min(3, page));
         for (int i = 0; i < pages.length; i++) {
             ((View) pages[i].getParent()).setVisibility(i == pageIndex ? View.VISIBLE : View.GONE);
             tabs[i].setTextColor(i == pageIndex ? accent : muted);
@@ -549,6 +770,7 @@ public class MainActivity extends Activity {
         automaticKernel.setEnabled(!busy);
         automaticAppUpdate.setEnabled(!busy);
         updateFlow();
+        refreshLab();
     }
 
     private boolean feedReady() {
@@ -732,6 +954,7 @@ public class MainActivity extends Activity {
             final String detail = result;
             post(() -> {
                 rootGranted = ok;
+                refreshLab();
                 rootStatus.setText(ok ? "Root: granted" : "Root: not granted");
                 status.setText(ok ? "Root check passed" : "Root access not granted"
                         + (isPackageInstalled("moe.shizuku.manager") && !shizukuGranted
@@ -780,8 +1003,8 @@ public class MainActivity extends Activity {
                     showSheet("Shizuku not connected", "Shizuku Manager is installed, but "
                             + "this app did not receive Shizuku's binder after waiting. Open "
                             + "Shizuku, confirm the service says Running, then return here. If "
-                            + "S22 Updater is not listed in Shizuku's Apps screen, install this "
-                            + "v4.2 build fresh so the provider permission is registered.",
+                    + "S22 Updater is not listed in Shizuku's Apps screen, install the "
+                             + "current build fresh so the provider permission is registered.",
                             "Open Shizuku", this::openShizuku, "Diagnose", this::diagnoseShizuku);
                 });
                 return;
@@ -843,14 +1066,43 @@ public class MainActivity extends Activity {
             }
             String result = KernelSetup.load(Build.MODEL, transport, getCacheDir(), helper);
             if (result.startsWith("KernelSU loaded") || result.startsWith("KernelSU is")) {
-                ksuLoaded = true;
-                updateManager();
+                adoptKsuSu(result);
+            } else {
+                post(() -> { kernelStatus.setText(result); status.setText(result); log(result); });
             }
-            post(() -> { kernelStatus.setText(result); status.setText(result); log(result); });
         } catch (Exception e) {
             post(() -> kernelStatus.setText("KernelSU setup failed: " + e.getMessage()));
             throw e;
         }
+    }
+
+    /**
+     * KernelSU owns the root path from here on: re-verify su so every later
+     * action (Lab, mounts, checks) uses KernelSU su while the exploit helper
+     * steps aside as bootstrap-only.
+     */
+    private void adoptKsuSu(String result) {
+        ksuLoaded = true;
+        updateManager();
+        boolean suNow = false;
+        try {
+            suNow = Shell.suGrantsRoot(getCacheDir());
+        } catch (Exception ignored) {
+        }
+        if (suNow) rootGranted = true;
+        final boolean su = suNow;
+        post(() -> {
+            kernelStatus.setText(result);
+            status.setText(result);
+            log(result);
+            if (su) {
+                rootStatus.setText("Root: granted (KernelSU su)");
+                log("Privileged shell is now KernelSU su; the exploit helper steps aside.");
+            } else {
+                log("KernelSU loaded but su is not granting yet — re-check root access.");
+            }
+            refreshLab();
+        });
     }
 
     private void updateManager() {
@@ -1056,11 +1308,7 @@ public class MainActivity extends Activity {
                     try {
                         String result = KernelSetup.load(Build.MODEL, transport,
                                 getCacheDir(), helperPath);
-                        post(() -> {
-                            kernelStatus.setText(result);
-                            status.setText(result);
-                            log(result);
-                        });
+                        adoptKsuSu(result);
                     } catch (Exception e) {
                         post(() -> kernelStatus.setText(
                                 "KernelSU setup failed: " + e.getMessage()));
@@ -1151,6 +1399,16 @@ public class MainActivity extends Activity {
                 + "Signer: " + shortCert(signature.updateCert) + "\n\n"
                 + "Android will ask you to confirm the install.";
         showSheet("Install app update", body, "Install", () -> {
+            // The permission can be revoked between the pre-download check and
+            // this tap — re-check at install time instead of failing silently.
+            if (!AppUpdate.canRequestPackageInstalls(MainActivity.this)) {
+                appUpdateStatus.setText("Install permission was revoked — re-allow, then retry");
+                refreshInstallPermission();
+                AppUpdate.openInstallPermission(MainActivity.this);
+                Toast.makeText(MainActivity.this, "Enable 'Allow from this source', then check again",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
             try {
                 AppUpdate.install(MainActivity.this, apk);
             } catch (Exception e) {
@@ -1168,13 +1426,16 @@ public class MainActivity extends Activity {
         log("App update conflict: " + signature.problem + " installed="
                 + signature.installedCert + " update=" + signature.updateCert);
         String body = "Android rejects in-place updates when the installed app and "
-                + "update APK are signed by incompatible certificates.\n\n"
+                + "update APK are signed by incompatible certificates — this is a "
+                + "platform rule, not an app bug, and it happens once per signing-key "
+                + "change (the lost v3 key, the v4.8 key rotation after the build-machine "
+                + "keystore was lost).\n\n"
                 + "Installed signer: " + shortCert(signature.installedCert) + "\n"
                 + "Update signer: " + shortCert(signature.updateCert) + "\n\n"
-                + "This one-time step applies only to builds signed with the lost v3 "
-                + "key: uninstall S22 Updater below, then install the current release "
-                + "fresh. The permanent release key (used since v4.2) updates normally "
-                + "after that — no more uninstalls.";
+                + "Uninstall S22 Updater below, then install the current release "
+                + "fresh. Every build on the same key after that updates normally — "
+                + "no more uninstalls. Uninstalling clears the saved feed URL and "
+                + "toggles; re-checking the feed and root after reinstall is one tap each.";
         showSheet("Package conflict", body, "Uninstall old app", this::openUninstall,
                 "Open releases", () -> AppUpdate.openReleases(MainActivity.this));
     }
@@ -1281,6 +1542,7 @@ public class MainActivity extends Activity {
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state); state.putInt("page", pageIndex);
         if (exportFile != null) state.putString("export_file", exportFile.getName());
+        state.putStringArray("lab_steps", labStepText.clone());
     }
     @Override protected void onDestroy() {
         closed = true; ui.removeCallbacksAndMessages(null); worker.shutdownNow(); super.onDestroy();
