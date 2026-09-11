@@ -7,6 +7,7 @@ import android.content.res.ColorStateList;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
@@ -26,19 +27,15 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<Button> actions = new ArrayList<>();
     private final List<Payload> payloads = new ArrayList<>();
-    private final LinearLayout[] pages = new LinearLayout[4];
-    private final Button[] tabs = new Button[4];
+    private final LinearLayout[] pages = new LinearLayout[3];
+    private final Button[] tabs = new Button[3];
     private TextView status, flowHint, rootStatus, shizukuStatus, managerStatus,
             kernelStatus, activityLog, changelog, appUpdateStatus, installPermStatus,
-            stepFeed, stepPayload, stepRoot, stepKsu, deviceInfo, homeLog,
-            labStatus, labLog, debloatStatus, debloatLog;
-    private final TextView[] labSteps = new TextView[LateActivate.STEPS];
-    private final String[] labStepText = new String[LateActivate.STEPS];
+            stepFeed, stepPayload, stepRoot, stepKsu, deviceInfo, homeLog;
     private ProgressBar progress;
-    private EditText feedInput, debloatPackage;
-    private Button flowAction, checkAppUpdate, labRun, debloatInspect, debloatRemove,
-            debloatRestore;
-    private Switch automaticKernel, automaticAppUpdate, labFullRestart;
+    private EditText feedInput;
+    private Button flowAction, checkAppUpdate;
+    private Switch automaticKernel, automaticAppUpdate;
     private SharedPreferences preferences;
     private Payload selected;
     private File exportFile;
@@ -46,6 +43,7 @@ public class MainActivity extends Activity {
     private final StringBuilder runLog = new StringBuilder();
     private volatile boolean closed;
     private int bg, surface, ink, muted, accent, border, pageIndex;
+    private boolean restoredProgress;
 
     static final String HELPER_DEVICE_PATH = "/data/local/tmp/cve-2026-43499-root";
     static final String EXPLOIT_DEVICE_PATH = "/data/local/tmp/cve-2026-43499";
@@ -90,12 +88,8 @@ public class MainActivity extends Activity {
             exportFile = new File(getFilesDir(), state.getString("export_file"));
         boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
-        bg = Color.parseColor(dark ? "#0D1420" : "#F3F6FB");
-        surface = Color.parseColor(dark ? "#182333" : "#FFFFFF");
-        ink = Color.parseColor(dark ? "#EDF3FF" : "#15243B");
-        muted = Color.parseColor(dark ? "#AABBD1" : "#566980");
-        accent = Color.parseColor(dark ? "#99BBFF" : "#2459CE");
-        border = Color.parseColor(dark ? "#2B3C52" : "#DFE7F1");
+        applyPalette(dark);
+        restoreDurableState();
         getWindow().setStatusBarColor(bg);
         getWindow().setNavigationBarColor(surface);
         if (!dark) getWindow().getDecorView().setSystemUiVisibility(
@@ -121,12 +115,11 @@ public class MainActivity extends Activity {
         }
         buildHome();
         buildLog();
-        buildLab(state);
         buildSettings();
         LinearLayout navigation = new LinearLayout(this);
         navigation.setBackgroundColor(surface);
         navigation.setPadding(dp(6), dp(8), dp(6), dp(8));
-        String[] names = {"Home", "Log", "Lab", "Settings"};
+        String[] names = {"Home", "Log", "Settings"};
         for (int i = 0; i < tabs.length; i++) {
             final int index = i;
             tabs[i] = makeButton(names[i], false);
@@ -137,46 +130,136 @@ public class MainActivity extends Activity {
         }
         shell.addView(navigation);
         setContentView(shell);
-        showPage(state == null ? 0 : state.getInt("page", 0));
+        applyRestoredState();
+        showPage(state == null ? pageIndex : state.getInt("page", pageIndex));
         updateManager();
         refreshControls();
         watchShizukuBinder();
-        log("Ready. One button walks the whole flow: update info, payload, exploit, KernelSU.");
+        if (restoredProgress) log("Progress restored for this boot.");
+        else log("Ready. One button walks the whole flow: update info, payload, exploit, KernelSU.");
         if (preferences.getBoolean("auto_app_update", false)) checkAppUpdate();
-        maybeVerifyLab();
-        maybeVerifyDebloat();
     }
 
     @Override protected void onResume() {
         super.onResume();
         pollShizuku();
         refreshInstallPermission();
-        maybeVerifyLab();
-        maybeVerifyDebloat();
     }
 
-    /**
-     * If a Lab restart was issued, verify once the session settles. Fires on
-     * relaunch after the restart killed this process, or on resume if the app
-     * somehow survived it.
-     */
-    private void maybeVerifyLab() {
-        String pending = preferences.getString("lab_pending", "");
-        if (pending.isEmpty() || busy) return;
-        String[] parts = pending.split("\\|", 2);
-        long at = 0;
+    private void applyPalette(boolean dark) {
+        int systemAccent = resolveColor(android.R.attr.colorAccent,
+                Color.parseColor(dark ? "#99BBFF" : "#2459CE"));
+        accent = systemAccent;
+        bg = blend(systemAccent, dark ? Color.BLACK : Color.WHITE, dark ? .88f : .92f);
+        surface = blend(systemAccent, dark ? Color.BLACK : Color.WHITE, dark ? .76f : .985f);
+        ink = Color.parseColor(dark ? "#F1F4FA" : "#14171F");
+        muted = blend(ink, surface, .42f);
+        border = blend(systemAccent, surface, dark ? .68f : .78f);
+    }
+
+    private int resolveColor(int attr, int fallback) {
+        android.util.TypedValue value = new android.util.TypedValue();
+        return getTheme().resolveAttribute(attr, value, true) ? value.data : fallback;
+    }
+
+    private int blend(int from, int to, float amount) {
+        float a = Math.max(0f, Math.min(1f, amount));
+        int r = (int) (Color.red(from) * (1f - a) + Color.red(to) * a);
+        int g = (int) (Color.green(from) * (1f - a) + Color.green(to) * a);
+        int b = (int) (Color.blue(from) * (1f - a) + Color.blue(to) * a);
+        return Color.rgb(r, g, b);
+    }
+
+    private String bootId() {
         try {
-            if (parts.length > 1) at = Long.parseLong(parts[1]);
-        } catch (Exception ignored) {
+            return Shell.runLocal(new String[]{"/system/bin/sh", "-c",
+                    "cat /proc/sys/kernel/random/boot_id 2>/dev/null || uptime"},
+                    getCacheDir(), 5000).trim();
+        } catch (Exception e) {
+            return "unknown";
         }
-        if (System.currentTimeMillis() - at < 45000) {
-            post(() -> log("Lab restart issued — verification starts once the session settles."));
-            ui.postDelayed(() -> {
-                if (!closed && !busy) maybeVerifyLab();
-            }, 50000);
-            return;
+    }
+
+    private boolean sameBoot() {
+        String stored = preferences.getString("boot_id", "");
+        String current = bootId();
+        if (!stored.equals(current)) {
+            preferences.edit()
+                    .putString("boot_id", current)
+                    .remove("root_granted")
+                    .remove("exploit_rooted")
+                    .remove("ksu_loaded")
+                    .remove("shizuku_granted")
+                    .apply();
+            return false;
         }
-        verifyLateActivation(parts[0]);
+        return true;
+    }
+
+    private void restoreDurableState() {
+        restoredProgress = false;
+        boolean boot = sameBoot();
+        rootGranted = boot && preferences.getBoolean("root_granted", false);
+        exploitRooted = boot && preferences.getBoolean("exploit_rooted", false);
+        ksuLoaded = boot && preferences.getBoolean("ksu_loaded", false);
+        shizukuGranted = boot && preferences.getBoolean("shizuku_granted", false);
+        pageIndex = preferences.getInt("page", 0);
+        String savedRunLog = preferences.getString("run_log", "");
+        if (!savedRunLog.isEmpty()) runLog.append(savedRunLog);
+        String feedJson = preferences.getString("feed_json", "");
+        String savedPayload = preferences.getString("selected_payload", "r0s-S901BXXSNGZD7");
+        if (!feedJson.isEmpty()) {
+            try {
+                restorePayloads(new JSONObject(feedJson), savedPayload);
+                restoredProgress = selected != null;
+            } catch (Exception e) {
+                preferences.edit().remove("feed_json").apply();
+            }
+        }
+        restoredProgress |= rootGranted || exploitRooted || ksuLoaded || runLog.length() > 0;
+    }
+
+    private void applyRestoredState() {
+        if (status == null) return;
+        String savedStatus = preferences.getString("status_text", "Ready to check");
+        status.setText(savedStatus);
+        rootStatus.setText(rooted() ? "Root: granted" : "Root: not checked");
+        shizukuStatus.setText(shizukuGranted ? "Shizuku: authorized" : "Shizuku: not checked");
+        kernelStatus.setText(ksuLoaded ? "Kernel module: loaded"
+                : rooted() ? "Kernel module: not loaded" : "Kernel module: check root first");
+        if (runLog.length() > 0) {
+            String all = runLog.toString();
+            homeLog.setText(all.length() > 2500 ? "…" + all.substring(all.length() - 2499) : all);
+        }
+        String session = preferences.getString("activity_log", "");
+        if (!session.isEmpty()) activityLog.setText(session);
+        updateFlow();
+    }
+
+    private void saveVolatileState() {
+        preferences.edit()
+                .putString("boot_id", bootId())
+                .putBoolean("root_granted", rootGranted)
+                .putBoolean("exploit_rooted", exploitRooted)
+                .putBoolean("ksu_loaded", ksuLoaded)
+                .putBoolean("shizuku_granted", shizukuGranted)
+                .apply();
+    }
+
+    private void saveStatus(String value) {
+        preferences.edit().putString("status_text", value).apply();
+    }
+
+    private void restorePayloads(JSONObject feed, String savedPayload) throws Exception {
+        JSONArray entries = feed.getJSONArray("payloads");
+        List<Payload> loaded = new ArrayList<>();
+        for (int i = 0; i < entries.length(); i++) loaded.add(new Payload(entries.getJSONObject(i)));
+        if (loaded.isEmpty()) return;
+        Payload preferred = loaded.get(0);
+        for (Payload p : loaded) if (p.id.equals(savedPayload)) preferred = p;
+        payloads.clear();
+        payloads.addAll(loaded);
+        selected = preferred;
     }
 
     /** Shows whether Android currently lets this app install APK updates. */
@@ -210,6 +293,7 @@ public class MainActivity extends Activity {
                         @Override public void onBinderDead() {
                             post(() -> {
                                 shizukuGranted = false;
+                                saveVolatileState();
                                 shizukuStatus.setText("Shizuku: binder died");
                                 log("Shizuku binder died — restart Shizuku if needed");
                             });
@@ -391,439 +475,8 @@ public class MainActivity extends Activity {
         changelog = text(changes, "Recent commits appear here after refreshing.", 14, muted, false);
     }
 
-    /**
-     * Experimental late module activation. The whole card stays locked until
-     * a root check reports granted: every privileged step runs through
-     * KernelSU su, never through the exploit bootstrap helper.
-     */
-    private void buildLab(Bundle state) {
-        LinearLayout lab = card(pages[2], "LATE MODULE ACTIVATION — EXPERIMENTAL");
-        labStatus = text(lab, rootGranted ? "Ready — KernelSU su will run every step."
-                : "Locked — tap Check root in Home first. Lab unlocks after root is granted.",
-                14, muted, false);
-        for (int i = 0; i < LateActivate.STEPS; i++) {
-            labSteps[i] = text(lab, "○  " + LateActivate.STEP_NAMES[i], 14, muted, false);
-            labStepText[i] = labSteps[i].getText().toString();
-        }
-        if (state != null && state.containsKey("lab_steps")) {
-            String[] saved = state.getStringArray("lab_steps");
-            if (saved != null) {
-                for (int i = 0; i < Math.min(saved.length, LateActivate.STEPS); i++) {
-                    if (saved[i] != null) {
-                        labStepText[i] = saved[i];
-                        labSteps[i].setText(saved[i]);
-                    }
-                }
-            }
-        }
-        labFullRestart = new Switch(this);
-        labFullRestart.setText("Full userspace restart (stop/start) instead of zygote only");
-        labFullRestart.setTextColor(ink);
-        labFullRestart.setPadding(0, dp(12), 0, dp(4));
-        lab.addView(labFullRestart, new LinearLayout.LayoutParams(-1, -2));
-        labRun = action(lab, "Run late activation", this::runLateActivation);
-        text(lab, "Opt-in contract: allowlist at " + LateActivate.ALLOW_PATH
-                + " (one module name per line). Each allowlisted module may provide "
-                + "late-mounts.sh (mounts, init namespace) and late-post.sh (scripts). "
-                + "A real reboot still wipes volatile root — this replays boot-time "
-                + "module work for the current session. The restart closes this app; "
-                + "reopen it to verify.", 13, muted, false);
-
-        LinearLayout debloat = card(pages[2], "SESSION DEBLOAT");
-        debloatStatus = text(debloat, "Locked — grant root first.", 14, muted, false);
-        debloatPackage = new EditText(this);
-        debloatPackage.setText(preferences.getString("debloat_pkg", ""));
-        debloatPackage.setHint("com.samsung.android.app.example");
-        debloatPackage.setSingleLine(true);
-        debloatPackage.setTextColor(ink);
-        debloatPackage.setHintTextColor(muted);
-        debloatPackage.setTextSize(14);
-        debloatPackage.setInputType(android.text.InputType.TYPE_CLASS_TEXT
-                | android.text.InputType.TYPE_TEXT_VARIATION_URI);
-        debloatPackage.setBackground(shape(bg, 12));
-        debloatPackage.setPadding(dp(12), dp(12), dp(12), dp(12));
-        debloat.addView(debloatPackage, new LinearLayout.LayoutParams(-1, -2));
-        debloatInspect = action(debloat, "Inspect package", this::inspectDebloatPackage);
-        debloatRemove = action(debloat, "Remove for this session", this::removeDebloatPackage);
-        debloatRestore = action(debloat, "Restore package", this::restoreDebloatPackage);
-        text(debloat, "Remove uses KernelSU su to stop the app, block background appops, "
-                + "uninstall/disable it for user 0, overlay-whiteout its system APKs in "
-                + "init's namespace, then restart userspace. Verified partitions are not "
-                + "modified; reboot restores stock files, while restore reverses the user "
-                + "state and removes whiteouts for the current session.", 13, muted, false);
-
-        LinearLayout output = card(pages[2], "LAB OUTPUT");
-        labLog = text(output, "Runner output appears here.", 12, ink, false);
-        labLog.setTypeface(Typeface.MONOSPACE);
-        labLog.setTextIsSelectable(true);
-        debloatLog = text(output, "Debloat output appears here.", 12, ink, false);
-        debloatLog.setTypeface(Typeface.MONOSPACE);
-        debloatLog.setTextIsSelectable(true);
-    }
-
-    /** Step states: run (●), done (✓), skip (–), fail (✕). */
-    private void labMark(int index, String state, String detail) {
-        if (index < 0 || index >= LateActivate.STEPS || labSteps[index] == null) return;
-        String label = LateActivate.STEP_NAMES[index]
-                + (detail == null || detail.isEmpty() ? "" : " — " + detail);
-        String marked;
-        int color;
-        boolean bold;
-        switch (state) {
-            case "done": marked = "✓  " + label; color = ink; bold = true; break;
-            case "run": marked = "●  " + label; color = ink; bold = true; break;
-            case "fail": marked = "✕  " + label; color = 0xFFB00020; bold = true; break;
-            default: marked = "–  " + label; color = muted; bold = false; break;
-        }
-        labStepText[index] = marked;
-        labSteps[index].setText(marked);
-        labSteps[index].setTextColor(color);
-        labSteps[index].setTypeface(null, bold ? Typeface.BOLD : Typeface.NORMAL);
-    }
-
-    private void labResetSteps() {
-        for (int i = 0; i < LateActivate.STEPS; i++) {
-            if (labSteps[i] == null) continue;
-            String value = "○  " + LateActivate.STEP_NAMES[i];
-            labStepText[i] = value;
-            labSteps[i].setText(value);
-            labSteps[i].setTextColor(muted);
-            labSteps[i].setTypeface(null, Typeface.NORMAL);
-        }
-    }
-
-    /** Lab is usable only after a root check grants access. */
-    private void refreshLab() {
-        if (labRun == null) return;
-        boolean open = rootGranted && !busy;
-        labRun.setEnabled(open);
-        labRun.setAlpha(open ? 1f : .5f);
-        if (labFullRestart != null) labFullRestart.setEnabled(rootGranted && !busy);
-        Button[] debloatButtons = {debloatInspect, debloatRemove, debloatRestore};
-        for (Button button : debloatButtons) {
-            if (button == null) continue;
-            button.setEnabled(open);
-            button.setAlpha(open ? 1f : .5f);
-        }
-        if (debloatPackage != null) debloatPackage.setEnabled(rootGranted && !busy);
-        if (labStatus != null && !busy) {
-            labStatus.setText(rootGranted ? "Ready — KernelSU su will run every step."
-                    : "Locked — tap Check root in Home first. Lab unlocks after root is granted.");
-            labStatus.setTextColor(rootGranted ? ink : muted);
-        }
-        if (debloatStatus != null && !busy) {
-            debloatStatus.setText(rootGranted ? "Ready — enter a package and inspect first."
-                    : "Locked — grant root first.");
-            debloatStatus.setTextColor(rootGranted ? ink : muted);
-        }
-    }
-
-    private void runLateActivation() {
-        if (busy) return;
-        if (!rootGranted) {
-            showSheet("Root needed first", "Lab unlocks after Check root access in "
-                    + "Home reports granted. Every Lab step runs through KernelSU su.",
-                    "Check root", this::checkRoot, "Close", null);
-            return;
-        }
-        final Shell.Transport transport = pickTransport();
-        if (!(transport instanceof Shell.Su)) {
-            showSheet("KernelSU su needed", "Late activation runs through KernelSU su, "
-                    + "not the exploit helper. Load KernelSU first (Home walks you there).",
-                    "OK", null, null, null);
-            return;
-        }
-        final String mode = (labFullRestart != null && labFullRestart.isChecked())
-                ? "android" : "zygote";
-        Runnable start = () -> job("Running late activation…", () -> {
-            post(this::labResetSteps);
-            try {
-                LateActivate.run(transport, getCacheDir(), mode,
-                        (index, st, detail) -> {
-                            final String text = detail;
-                            if (index == 5 && "run".equals(st)) {
-                                preferences.edit().putString("lab_pending",
-                                        mode + "|" + System.currentTimeMillis()).commit();
-                            }
-                            post(() -> {
-                                labMark(index, st, text);
-                                labAppend("[" + st + "] " + LateActivate.STEP_NAMES[index]
-                                        + (text.isEmpty() ? "" : ": " + text));
-                            });
-                        });
-            } catch (Exception e) {
-                preferences.edit().remove("lab_pending").apply();
-                post(() -> {
-                    labStatus.setText("Late activation failed: " + e.getMessage());
-                    log("Late activation failed: " + e.getMessage());
-                });
-                throw e;
-            }
-            post(() -> {
-                labStatus.setText("Restart issued (" + mode + ") — reopen the app to verify.");
-                log("Late activation restart issued (" + mode + "). "
-                        + "Reopen the app; verification runs automatically.");
-            });
-        });
-        if ("android".equals(mode)) {
-            showSheet("App will close", "A full userspace restart kills every app, "
-                    + "including this one. Reopen S22 Updater afterwards — "
-                    + "verification runs automatically.", "Restart now", start, "Back", null);
-        } else {
-            showSheet("Restarting zygote", "Zygote (and this app) will restart so the "
-                    + "new module state takes effect. Reopen S22 Updater afterwards — "
-                    + "verification runs automatically.", "Restart now", start, "Back", null);
-        }
-    }
-
-    private void labAppend(String line) {
-        if (labLog == null) return;
-        String previous = labLog.getText().toString();
-        if (previous.equals("Runner output appears here.")) previous = "";
-        String next = previous + line + "\n";
-        if (next.length() > 6000) next = "…" + next.substring(next.length() - 5999);
-        labLog.setText(next);
-    }
-
-    /** Runs on launch/resume when a restart was issued: proves root survived. */
-    private void verifyLateActivation(String mode) {
-        job("Verifying late activation…", () -> {
-            boolean granted;
-            String probe;
-            try {
-                probe = Shell.runLocal(new String[]{"su", "-c", "id"}, getCacheDir(), 15000);
-                granted = probe.matches("(?s).*\\buid=0\\b.*");
-            } catch (Exception e) {
-                granted = false;
-                probe = e.getMessage();
-            }
-            final boolean ok = granted;
-            final String probeText = probe;
-            post(() -> {
-                rootGranted = ok;
-                rootStatus.setText(ok ? "Root: granted" : "Root: not granted");
-                refreshLab();
-            });
-            if (!ok) {
-                preferences.edit().remove("lab_pending").apply();
-                post(() -> {
-                    labStatus.setText("Session ended before verification (reboot?). Re-run the flow.");
-                    log("Late-activation verify: no root (" + probeText + "). Nothing persisted — expected after a real reboot.");
-                    showSheet("Session ended", "No root after the restart — a real "
-                            + "reboot wipes volatile root, so there is nothing to verify. "
-                            + "Re-run the flow from Home.", "OK", null, null, null);
-                });
-                return;
-            }
-            String report = LateActivate.verify(new Shell.Su(), getCacheDir());
-            final String text = report;
-            preferences.edit().remove("lab_pending").apply();
-            final boolean active = text.contains("RESULT=active");
-            post(() -> {
-                labStatus.setText(active ? "Late activation verified active."
-                        : "Late activation degraded — see output.");
-                for (String line : text.split("\n")) labAppend(line);
-                log("Late-activation verify (" + mode + "):\n" + text);
-                labMark(5, active ? "done" : "fail",
-                        active ? "Verified after restart" : "Degraded — see output");
-                showSheet(active ? "Modules active" : "Activation degraded", text,
-                        "OK", null, null, null);
-            });
-        });
-    }
-
-    private String debloatPkg() throws Exception {
-        String pkg = debloatPackage == null ? "" : debloatPackage.getText().toString().trim();
-        Debloat.requirePackage(pkg);
-        preferences.edit().putString("debloat_pkg", pkg).apply();
-        return pkg;
-    }
-
-    private Shell.Transport ksuTransportOrExplain() {
-        if (!rootGranted) {
-            showSheet("Root needed first", "Session Debloat unlocks after Check root "
-                    + "access reports granted. It runs through KernelSU su and will not "
-                    + "use the CVE helper as the active root path.", "Check root",
-                    this::checkRoot, "Close", null);
-            return null;
-        }
-        Shell.Transport transport = pickTransport();
-        if (!(transport instanceof Shell.Su)) {
-            showSheet("KernelSU su needed", "Debloat needs KernelSU su. Load KernelSU "
-                    + "from Home first, then come back here.", "OK", null, null, null);
-            return null;
-        }
-        return transport;
-    }
-
-    private String debloatRestartMode() {
-        return labFullRestart != null && labFullRestart.isChecked() ? "android" : "zygote";
-    }
-
-    private void debloatAppend(String line) {
-        if (debloatLog == null) return;
-        String previous = debloatLog.getText().toString();
-        if (previous.equals("Debloat output appears here.")) previous = "";
-        String next = previous + line + "\n";
-        if (next.length() > 6000) next = "…" + next.substring(next.length() - 5999);
-        debloatLog.setText(next);
-    }
-
-    private void inspectDebloatPackage() {
-        if (busy) return;
-        Shell.Transport transport = ksuTransportOrExplain();
-        if (transport == null) return;
-        final String pkg;
-        try {
-            pkg = debloatPkg();
-        } catch (Exception e) {
-            error(e);
-            return;
-        }
-        job("Inspecting " + pkg + "…", () -> {
-            String report = Debloat.inspect(transport, getCacheDir(), pkg);
-            post(() -> {
-                debloatStatus.setText("Inspect complete: " + pkg);
-                debloatAppend("$ inspect " + pkg);
-                debloatAppend(report);
-                log("Debloat inspect " + pkg + ":\n" + report);
-            });
-        });
-    }
-
-    private void removeDebloatPackage() {
-        if (busy) return;
-        Shell.Transport transport = ksuTransportOrExplain();
-        if (transport == null) return;
-        final String pkg;
-        try {
-            pkg = debloatPkg();
-        } catch (Exception e) {
-            error(e);
-            return;
-        }
-        final String mode = debloatRestartMode();
-        showSheet("Remove for this session", "This will stop " + pkg + ", block its "
-                + "background execution, uninstall/disable it for user 0 where Android "
-                + "allows it, overlay-whiteout its system APK files in init's namespace, "
-                + "then restart userspace (" + mode + ").\n\nVerified partitions are not changed; a real reboot restores stock files.",
-                "Remove", () -> job("Removing " + pkg + "…", () -> {
-                    preferences.edit().putString("debloat_pending",
-                            "remove|" + pkg + "|" + mode + "|" + System.currentTimeMillis()).commit();
-                    try {
-                        String out = Debloat.remove(transport, getCacheDir(), pkg, mode);
-                        post(() -> {
-                            debloatStatus.setText("Restart issued for " + pkg + " — reopen to verify.");
-                            debloatAppend("$ remove " + pkg + " " + mode);
-                            debloatAppend(out);
-                            log("Debloat remove issued for " + pkg + " (" + mode + ")");
-                        });
-                    } catch (Exception e) {
-                        preferences.edit().remove("debloat_pending").apply();
-                        throw e;
-                    }
-                }), "Back", null);
-    }
-
-    private void restoreDebloatPackage() {
-        if (busy) return;
-        Shell.Transport transport = ksuTransportOrExplain();
-        if (transport == null) return;
-        final String pkg;
-        try {
-            pkg = debloatPkg();
-        } catch (Exception e) {
-            error(e);
-            return;
-        }
-        final String mode = debloatRestartMode();
-        showSheet("Restore package", "This removes S22 Updater's overlay whiteouts "
-                + "for " + pkg + ", re-enables/install-existing for user 0, resets "
-                + "background appops, then restarts userspace (" + mode + ").",
-                "Restore", () -> job("Restoring " + pkg + "…", () -> {
-                    preferences.edit().putString("debloat_pending",
-                            "restore|" + pkg + "|" + mode + "|" + System.currentTimeMillis()).commit();
-                    try {
-                        String out = Debloat.restore(transport, getCacheDir(), pkg, mode);
-                        post(() -> {
-                            debloatStatus.setText("Restore restart issued for " + pkg + " — reopen to verify.");
-                            debloatAppend("$ restore " + pkg + " " + mode);
-                            debloatAppend(out);
-                            log("Debloat restore issued for " + pkg + " (" + mode + ")");
-                        });
-                    } catch (Exception e) {
-                        preferences.edit().remove("debloat_pending").apply();
-                        throw e;
-                    }
-                }), "Back", null);
-    }
-
-    private void maybeVerifyDebloat() {
-        String pending = preferences.getString("debloat_pending", "");
-        if (pending.isEmpty()) return;
-        if (busy) {
-            ui.postDelayed(() -> {
-                if (!closed && !busy) maybeVerifyDebloat();
-            }, 5000);
-            return;
-        }
-        String[] parts = pending.split("\\|", 4);
-        if (parts.length < 4) {
-            preferences.edit().remove("debloat_pending").apply();
-            return;
-        }
-        long at = 0;
-        try {
-            at = Long.parseLong(parts[3]);
-        } catch (Exception ignored) {
-        }
-        if (System.currentTimeMillis() - at < 45000) {
-            ui.postDelayed(() -> {
-                if (!closed && !busy) maybeVerifyDebloat();
-            }, 50000);
-            return;
-        }
-        verifyDebloat(parts[0], parts[1], parts[2]);
-    }
-
-    private void verifyDebloat(String action, String pkg, String mode) {
-        job("Verifying debloat result…", () -> {
-            if (!Shell.suGrantsRoot(getCacheDir())) {
-                preferences.edit().remove("debloat_pending").apply();
-                post(() -> {
-                    rootGranted = false;
-                    rootStatus.setText("Root: not granted");
-                    debloatStatus.setText("Cannot verify — root is gone (real reboot?)");
-                    refreshLab();
-                    showSheet("Cannot verify", "Root is gone, so the session ended. "
-                            + "A real reboot restores stock files and clears volatile root.",
-                            "OK", null, null, null);
-                });
-                return;
-            }
-            rootGranted = true;
-            String report = Debloat.verify(new Shell.Su(), getCacheDir(), pkg);
-            preferences.edit().remove("debloat_pending").apply();
-            final String text = report;
-            final boolean removed = text.contains("USER0=removed");
-            final boolean restored = text.contains("USER0=present");
-            final boolean ok = "remove".equals(action) ? removed : restored;
-            post(() -> {
-                rootStatus.setText("Root: granted");
-                refreshLab();
-                debloatStatus.setText(ok ? "Debloat verified: " + action + " " + pkg
-                        : "Debloat needs attention: " + pkg);
-                debloatAppend("$ verify " + pkg + " after " + action + " (" + mode + ")");
-                debloatAppend(text);
-                log("Debloat verify " + action + " " + pkg + ":\n" + text);
-                showSheet(ok ? "Debloat verified" : "Debloat needs attention", text,
-                        "OK", null, null, null);
-            });
-        });
-    }
-
     private void buildSettings() {
-        LinearLayout settings = card(pages[3], "FEED SETTINGS");
+        LinearLayout settings = card(pages[2], "FEED SETTINGS");
         text(settings, "Targets feed URL", 17, ink, true);
         feedInput = new EditText(this);
         feedInput.setText(preferences.getString("feed_url", FEED));
@@ -849,7 +502,7 @@ public class MainActivity extends Activity {
             resetFeed();
             log("Default feed restored.");
         });
-        LinearLayout updater = card(pages[3], "APP UPDATES");
+        LinearLayout updater = card(pages[2], "APP UPDATES");
         appUpdateStatus = text(updater, "S22 Updater " + AppUpdate.installedName(this)
                 + " — app update status unknown", 14, muted, false);
         installPermStatus = text(updater, "", 13, muted, false);
@@ -867,10 +520,10 @@ public class MainActivity extends Activity {
         automaticAppUpdate.setOnCheckedChangeListener((button, checked) ->
                 preferences.edit().putBoolean("auto_app_update", checked).apply());
         updater.addView(automaticAppUpdate, new LinearLayout.LayoutParams(-1, -2));
-        LinearLayout tools = card(pages[3], "SHIZUKU TOOLS");
+        LinearLayout tools = card(pages[2], "SHIZUKU TOOLS");
         action(tools, "Open Shizuku app", this::openShizuku);
         action(tools, "Diagnose Shizuku handshake", this::diagnoseShizuku);
-        LinearLayout payloadCard = card(pages[3], "PAYLOAD FILE");
+        LinearLayout payloadCard = card(pages[2], "PAYLOAD FILE");
         action(payloadCard, "Export downloaded payload", () -> {
             if (selected == null) {
                 Toast.makeText(this, "Check for updates first", Toast.LENGTH_SHORT).show();
@@ -879,7 +532,7 @@ public class MainActivity extends Activity {
             export();
         });
         text(payloadCard, "Saves the verified payload to a file you choose.", 13, muted, false);
-        LinearLayout options = card(pages[3], "OPTIONS");
+        LinearLayout options = card(pages[2], "OPTIONS");
         automaticKernel = new Switch(this);
         automaticKernel.setText("Load KernelSU after a successful root check");
         automaticKernel.setTextColor(ink);
@@ -889,7 +542,7 @@ public class MainActivity extends Activity {
                 preferences.edit().putBoolean("auto_kernel", checked).apply());
         options.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
         text(options, "When enabled, a successful root check also loads the matching module. It skips a module already loaded.", 13, muted, false);
-        LinearLayout about = card(pages[3], "ABOUT THIS BUILD");
+        LinearLayout about = card(pages[2], "ABOUT THIS BUILD");
         text(about, "S22 Updater " + AppUpdate.installedName(this), 20, ink, true);
         TextView identity = text(about, "com.bodo121.s22updater", 13, muted, false);
         identity.setTextIsSelectable(true);
@@ -899,14 +552,24 @@ public class MainActivity extends Activity {
     private void resetFeed() {
         selected = null;
         payloads.clear();
+        preferences.edit().remove("feed_json").remove("selected_payload").apply();
         status.setText("Feed changed — check for updates");
+        saveStatus("Feed changed — check for updates");
         refreshControls();
     }
 
     private void showPage(int page) {
-        pageIndex = Math.max(0, Math.min(3, page));
+        pageIndex = Math.max(0, Math.min(2, page));
+        preferences.edit().putInt("page", pageIndex).apply();
         for (int i = 0; i < pages.length; i++) {
-            ((View) pages[i].getParent()).setVisibility(i == pageIndex ? View.VISIBLE : View.GONE);
+            View parent = (View) pages[i].getParent();
+            boolean visible = i == pageIndex;
+            parent.setVisibility(visible ? View.VISIBLE : View.GONE);
+            if (visible) {
+                parent.setAlpha(0f);
+                parent.setTranslationY(dp(8));
+                parent.animate().alpha(1f).translationY(0f).setDuration(180).start();
+            }
             tabs[i].setTextColor(i == pageIndex ? accent : muted);
             tabs[i].setTypeface(null, i == pageIndex ? Typeface.BOLD : Typeface.NORMAL);
         }
@@ -917,6 +580,7 @@ public class MainActivity extends Activity {
         if (busy || closed) return;
         busy = true;
         status.setText(message);
+        saveStatus(message);
         progress.setIndeterminate(true);
         progress.setVisibility(View.VISIBLE);
         log(message);
@@ -944,6 +608,7 @@ public class MainActivity extends Activity {
     private void error(Exception e) {
         String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
         status.setText(message);
+        saveStatus(message);
         log("Failed: " + message);
         showSheet("Action failed", message, "OK", null, null, null);
     }
@@ -1003,6 +668,7 @@ public class MainActivity extends Activity {
         String previous = activityLog.getText().toString();
         String next = DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()) + "  " + value + "\n\n" + previous;
         activityLog.setText(next.substring(0, Math.min(12000, next.length())));
+        preferences.edit().putString("activity_log", activityLog.getText().toString()).apply();
     }
 
     private File localFile(Payload p) throws Exception { return PayloadStore.file(getFilesDir(), p.id); }
@@ -1013,7 +679,6 @@ public class MainActivity extends Activity {
         automaticKernel.setEnabled(!busy);
         automaticAppUpdate.setEnabled(!busy);
         updateFlow();
-        refreshLab();
     }
 
     private boolean feedReady() {
@@ -1116,31 +781,34 @@ public class MainActivity extends Activity {
         if (runLog.length() > 6000) runLog.delete(0, runLog.length() - 6000);
         String all = runLog.toString();
         homeLog.setText(all.length() > 2500 ? "…" + all.substring(all.length() - 2499) : all);
+        preferences.edit().putString("run_log", all).apply();
     }
 
     private void checkFeed() {
         final String url = preferences.getString("feed_url", FEED);
         job("Loading targets feed…", () -> {
-            JSONObject feed = new JSONObject(Network.text(url));
+            String feedText = Network.text(url);
+            JSONObject feed = new JSONObject(feedText);
             if (feed.optInt("schemaVersion", 3) != 3) throw new IOException("Only schema-v3 feeds are supported");
+            String saved = preferences.getString("selected_payload", "r0s-S901BXXSNGZD7");
             JSONArray entries = feed.getJSONArray("payloads");
-            List<Payload> loaded = new ArrayList<>();
             Set<String> ids = new HashSet<>();
             for (int i = 0; i < entries.length(); i++) {
                 Payload p = new Payload(entries.getJSONObject(i));
                 if (!ids.add(p.id)) throw new IOException("Duplicate payload ID");
-                loaded.add(p);
             }
-            if (loaded.isEmpty()) throw new IOException("Feed contains no payloads");
-            String saved = preferences.getString("selected_payload", "r0s-S901BXXSNGZD7");
-            Payload preferred = loaded.get(0);
-            for (Payload p : loaded) if (p.id.equals(saved)) preferred = p;
-            final Payload chosen = preferred;
+            restorePayloads(feed, saved);
+            if (selected == null) throw new IOException("Feed contains no payloads");
+            final Payload chosen = selected;
+            final int count = payloads.size();
             post(() -> {
-                payloads.clear(); payloads.addAll(loaded); selected = chosen;
-                preferences.edit().putString("selected_payload", chosen.id).apply();
+                preferences.edit()
+                        .putString("selected_payload", chosen.id)
+                        .putString("feed_json", feed.toString())
+                        .apply();
                 status.setText("Feed ready • " + chosen.name);
-                log("Feed loaded: " + chosen.id + " selected.");
+                saveStatus("Feed ready • " + chosen.name);
+                log("Feed loaded: " + chosen.id + " selected (" + count + " target(s)).");
             });
         });
     }
@@ -1170,6 +838,7 @@ public class MainActivity extends Activity {
                         progress.setIndeterminate(total <= 0);
                         progress.setProgress(percent);
                         status.setText("Downloading • " + (total > 0 ? percent + "%" : read + " bytes"));
+                        saveStatus(status.getText().toString());
                     });
                 });
                 PayloadStore.verify(part, p.size, p.sha);
@@ -1177,6 +846,7 @@ public class MainActivity extends Activity {
                 String detail = describeLocal(p);
                 post(() -> {
                     status.setText("Download saved and verified");
+                    saveStatus("Download saved and verified");
                     log("Saved " + p.id + (p.sha.isEmpty() ? "; size checked, no reference SHA-256 in feed." : "; SHA-256 verified."));
                     log(detail.replace("\n", " | "));
                 });
@@ -1190,18 +860,22 @@ public class MainActivity extends Activity {
             boolean granted = false;
             String result;
             try {
-                result = Shell.runLocal(new String[]{"su", "-c", "id"}, getCacheDir(), 15000);
-                granted = result.matches("(?s).*\\buid=0\\b.*");
+                result = Shell.suRootProbe(getCacheDir());
+                granted = Shell.outputGrantsRoot(result);
             } catch (Exception e) { result = e.getMessage(); }
             final boolean ok = granted;
             final String detail = result;
             post(() -> {
                 rootGranted = ok;
-                refreshLab();
+                saveVolatileState();
                 rootStatus.setText(ok ? "Root: granted" : "Root: not granted");
                 status.setText(ok ? "Root check passed" : "Root access not granted"
                         + (isPackageInstalled("moe.shizuku.manager") && !shizukuGranted
                         ? " — no su? Tap Authorize Shizuku below." : ""));
+                saveStatus(status.getText().toString());
+                if (ok) rootStatus.animate().scaleX(1.04f).scaleY(1.04f).setDuration(110)
+                        .withEndAction(() -> rootStatus.animate().scaleX(1f).scaleY(1f)
+                                .setDuration(130).start()).start();
                 updateManager();
                 log("Root check: " + detail);
                 if (!ok) kernelStatus.setText("Kernel module: root access needed to check");
@@ -1213,6 +887,7 @@ public class MainActivity extends Activity {
                     String loaded = KernelSetup.status(transport, getCacheDir());
                     final boolean present = "loaded".equals(loaded);
                     if (present) ksuLoaded = true;
+                    saveVolatileState();
                     post(() -> kernelStatus.setText(present
                             ? "Kernel module: loaded" : "Kernel module: not loaded"));
                 }
@@ -1238,6 +913,7 @@ public class MainActivity extends Activity {
             if (!Shell.awaitShizukuRunning(this, 4000)) {
                 post(() -> {
                     shizukuGranted = false;
+                    saveVolatileState();
                     shizukuStatus.setText(isPackageInstalled("moe.shizuku.manager")
                             ? "Shizuku: service not connected"
                             : "Shizuku: not installed");
@@ -1245,9 +921,9 @@ public class MainActivity extends Activity {
                     log(Shell.describeShizukuState());
                     showSheet("Shizuku not connected", "Shizuku Manager is installed, but "
                             + "this app did not receive Shizuku's binder after waiting. Open "
-                            + "Shizuku, confirm the service says Running, then return here. If "
-                    + "S22 Updater is not listed in Shizuku's Apps screen, install the "
-                             + "current build fresh so the provider permission is registered.",
+                    + "Shizuku, confirm the service says Running, then return here. If "
+                            + "S22 Updater is not listed in Shizuku's Apps screen, install the "
+                            + "current build fresh so the provider permission is registered.",
                             "Open Shizuku", this::openShizuku, "Diagnose", this::diagnoseShizuku);
                 });
                 return;
@@ -1255,6 +931,7 @@ public class MainActivity extends Activity {
             if (Shell.shizukuGranted()) {
                 post(() -> {
                     shizukuGranted = true;
+                    saveVolatileState();
                     shizukuStatus.setText("Shizuku: authorized");
                     status.setText("Shizuku shell ready");
                     log("Shizuku shell ready");
@@ -1269,6 +946,7 @@ public class MainActivity extends Activity {
                 @Override public void onResult(final boolean granted) {
                     post(() -> {
                         shizukuGranted = granted;
+                        saveVolatileState();
                         shizukuStatus.setText(granted ? "Shizuku: authorized"
                                 : "Shizuku: denied");
                         status.setText(granted ? "Shizuku shell ready"
@@ -1311,7 +989,7 @@ public class MainActivity extends Activity {
             if (result.startsWith("KernelSU loaded") || result.startsWith("KernelSU is")) {
                 adoptKsuSu(result);
             } else {
-                post(() -> { kernelStatus.setText(result); status.setText(result); log(result); });
+                post(() -> { kernelStatus.setText(result); status.setText(result); saveStatus(result); log(result); });
             }
         } catch (Exception e) {
             post(() -> kernelStatus.setText("KernelSU setup failed: " + e.getMessage()));
@@ -1319,11 +997,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    /**
-     * KernelSU owns the root path from here on: re-verify su so every later
-     * action (Lab, mounts, checks) uses KernelSU su while the exploit helper
-     * steps aside as bootstrap-only.
-     */
     private void adoptKsuSu(String result) {
         ksuLoaded = true;
         updateManager();
@@ -1333,18 +1006,22 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {
         }
         if (suNow) rootGranted = true;
-        final boolean su = suNow;
+        saveVolatileState();
+        final boolean suReady = suNow;
         post(() -> {
             kernelStatus.setText(result);
             status.setText(result);
+            saveStatus(result);
             log(result);
-            if (su) {
+            if (suReady) {
                 rootStatus.setText("Root: granted (KernelSU su)");
-                log("Privileged shell is now KernelSU su; the exploit helper steps aside.");
+                rootStatus.animate().scaleX(1.04f).scaleY(1.04f).setDuration(110)
+                        .withEndAction(() -> rootStatus.animate().scaleX(1f).scaleY(1f)
+                                .setDuration(130).start()).start();
+                log("Privileged shell is now KernelSU su; bootstrap root stepped aside.");
             } else {
-                log("KernelSU loaded but su is not granting yet — re-check root access.");
+                log("KernelSU loaded, but su has not granted this app yet. Tap Check root once Manager grants it.");
             }
-            refreshLab();
         });
     }
 
@@ -1411,6 +1088,7 @@ public class MainActivity extends Activity {
             stageExecutable(transport, payloadFile, EXPLOIT_DEVICE_PATH, hash);
             post(() -> {
                 status.setText("Exploit running — keep the phone idle…");
+                saveStatus("Exploit running — keep the phone idle…");
                 log("Exploit started via " + transport.name() + ". Attempt budget 24, watchdog 15 min. Helper: " + helperPath);
                 runAppend("$ LD_PRELOAD=" + EXPLOIT_DEVICE_PATH + " sh  (attempts=24)");
             });
@@ -1433,12 +1111,15 @@ public class MainActivity extends Activity {
                 if (rooted) {
                     rootGranted = rootGranted || transport instanceof Shell.Su;
                     exploitRooted = true;
+                    saveVolatileState();
                     status.setText("Exploit completed — root verified");
+                    saveStatus("Exploit completed — root verified");
                     log("Exploit success marker seen; helper reports:\n" + probeText);
                     runAppend("[exploit completed] " + probeText.replace("\n", " | "));
                     promptKernelSu(transport, helper);
                 } else {
                     status.setText("Exploit finished without root");
+                    saveStatus("Exploit finished without root");
                     log("No success marker/root. Reboot for clean slabs, close apps, "
                             + "keep the screen unlocked and idle, then run again.");
                     runAppend("[no root] reboot for clean slabs, then run again");
@@ -1529,6 +1210,7 @@ public class MainActivity extends Activity {
                 final String live = lastLine;
                 post(() -> {
                     status.setText(live.isEmpty() ? "Exploit running…" : "Exploit: " + live);
+                    saveStatus(status.getText().toString());
                     log("exploit: " + snapshot.replace("\n", " | "));
                     if (!live.isEmpty()) runAppend(live);
                 });
@@ -1595,6 +1277,7 @@ public class MainActivity extends Activity {
                 post(() -> {
                     appUpdateStatus.setText("S22 Updater " + info.versionName
                             + " available — install permission missing");
+                    refreshInstallPermission();
                     showSheet("Allow app installs", "S22 Updater " + info.versionName
                             + " is available, but Android blocks this app from installing "
                             + "APKs right now. Enable 'Allow from this source' first — "
@@ -1607,6 +1290,7 @@ public class MainActivity extends Activity {
             post(() -> {
                 appUpdateStatus.setText("S22 Updater " + info.versionName + " available");
                 status.setText("Downloading app update…");
+                saveStatus("Downloading app update…");
                 log("App update " + info.tag + " found, downloading " + info.apkName);
             });
             final File apk = AppUpdate.download(this, info, new Network.Progress() {
@@ -1615,6 +1299,7 @@ public class MainActivity extends Activity {
                         progress.setIndeterminate(total <= 0);
                         if (total > 0) progress.setProgress((int) (read * 1000 / total));
                         status.setText("Downloading app update • " + read + " bytes");
+                        saveStatus(status.getText().toString());
                     });
                 }
             });
@@ -1624,6 +1309,7 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) {
                 }
                 status.setText("App update downloaded");
+                saveStatus("App update downloaded");
                 log("App update verified, asking to install.");
             });
             final AppUpdate.SignatureReport signature = AppUpdate.checkInstallCompatibility(this, apk);
@@ -1642,8 +1328,6 @@ public class MainActivity extends Activity {
                 + "Signer: " + shortCert(signature.updateCert) + "\n\n"
                 + "Android will ask you to confirm the install.";
         showSheet("Install app update", body, "Install", () -> {
-            // The permission can be revoked between the pre-download check and
-            // this tap — re-check at install time instead of failing silently.
             if (!AppUpdate.canRequestPackageInstalls(MainActivity.this)) {
                 appUpdateStatus.setText("Install permission was revoked — re-allow, then retry");
                 refreshInstallPermission();
@@ -1669,16 +1353,13 @@ public class MainActivity extends Activity {
         log("App update conflict: " + signature.problem + " installed="
                 + signature.installedCert + " update=" + signature.updateCert);
         String body = "Android rejects in-place updates when the installed app and "
-                + "update APK are signed by incompatible certificates — this is a "
-                + "platform rule, not an app bug, and it happens once per signing-key "
-                + "change (the lost v3 key, the v4.8 key rotation after the build-machine "
-                + "keystore was lost).\n\n"
+                + "update APK are signed by incompatible certificates. This is a "
+                + "platform rule, not an updater bug, and it happens once per "
+                + "signing-key change.\n\n"
                 + "Installed signer: " + shortCert(signature.installedCert) + "\n"
                 + "Update signer: " + shortCert(signature.updateCert) + "\n\n"
                 + "Uninstall S22 Updater below, then install the current release "
-                + "fresh. Every build on the same key after that updates normally — "
-                + "no more uninstalls. Uninstalling clears the saved feed URL and "
-                + "toggles; re-checking the feed and root after reinstall is one tap each.";
+                + "fresh. Builds signed by the same key after that update normally.";
         showSheet("Package conflict", body, "Uninstall old app", this::openUninstall,
                 "Open releases", () -> AppUpdate.openReleases(MainActivity.this));
     }
@@ -1759,7 +1440,9 @@ public class MainActivity extends Activity {
     }
     private LinearLayout card(LinearLayout parent, String heading) {
         LinearLayout card = column();
-        card.setBackground(shape(surface, 20)); card.setPadding(dp(18), dp(16), dp(18), dp(18));
+        card.setBackground(shape(surface, 22));
+        card.setElevation(dp(2));
+        card.setPadding(dp(18), dp(16), dp(18), dp(18));
         parent.addView(card, spaced()); text(card, heading, 12, accent, true); return card;
     }
     private TextView text(LinearLayout parent, String value, int size, int color, boolean bold) {
@@ -1775,17 +1458,47 @@ public class MainActivity extends Activity {
         button.setMinHeight(dp(48)); button.setMinimumWidth(0);
         button.setPadding(dp(12), dp(10), dp(12), dp(10));
         button.setTextColor(primary ? bg : accent);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(0x337A9FFF), shape(primary ? accent : bg, 12), null));
+        button.setElevation(primary ? dp(2) : 0);
+        int fill = primary ? accent : blend(accent, bg, .88f);
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(blend(accent, surface, .55f)),
+                shape(fill, 14), null));
+        int icon = iconFor(label);
+        if (icon != 0) {
+            try {
+                Drawable drawable = getResources().getDrawable(icon);
+                drawable.setTint(primary ? bg : accent);
+                button.setCompoundDrawablesWithIntrinsicBounds(drawable, null, null, null);
+                button.setCompoundDrawablePadding(dp(8));
+            } catch (Exception ignored) {
+            }
+        }
         return button;
+    }
+
+    private int iconFor(String label) {
+        String l = label.toLowerCase(Locale.ROOT);
+        if (l.contains("update") || l.contains("refresh") || l.contains("check for"))
+            return android.R.drawable.ic_popup_sync;
+        if (l.contains("root") || l.contains("authorize") || l.contains("permission"))
+            return android.R.drawable.ic_secure;
+        if (l.contains("open")) return android.R.drawable.ic_menu_view;
+        if (l.contains("save") || l.contains("export")) return android.R.drawable.ic_menu_save;
+        if (l.contains("copy")) return android.R.drawable.ic_menu_share;
+        if (l.contains("restore")) return android.R.drawable.ic_menu_revert;
+        return android.R.drawable.ic_menu_manage;
     }
     private Button action(LinearLayout parent, String label, Runnable callback) {
         Button button = makeButton(label, true);
-        button.setOnClickListener(v -> callback.run()); parent.addView(button, spaced()); actions.add(button); return button;
+        button.setOnClickListener(v -> {
+            v.animate().scaleX(.985f).scaleY(.985f).setDuration(70)
+                    .withEndAction(() -> v.animate().scaleX(1f).scaleY(1f).setDuration(110).start())
+                    .start();
+            callback.run();
+        }); parent.addView(button, spaced()); actions.add(button); return button;
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state); state.putInt("page", pageIndex);
         if (exportFile != null) state.putString("export_file", exportFile.getName());
-        state.putStringArray("lab_steps", labStepText.clone());
     }
     @Override protected void onDestroy() {
         closed = true; ui.removeCallbacksAndMessages(null); worker.shutdownNow(); super.onDestroy();

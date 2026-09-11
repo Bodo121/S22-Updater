@@ -6,14 +6,13 @@
 # Optional signing overrides (release builds should reuse one keystore so
 # updates install cleanly over previous versions):
 #   SIGN_KEYSTORE, SIGN_STORE_PASS, SIGN_KEY_PASS, SIGN_ALIAS
-# Optional Android 9+ key-rotation lineage for one-time migration from an old
-# signing key:
-#   SIGN_LINEAGE, SIGN_ROTATION_MIN_SDK (default 28)
 # Optional safety net that fails the build unless the APK signer matches:
 #   SIGN_EXPECTED_CERT_SHA256 (permanent release cert, see README)
+# Optional local-only signing ledger (git-ignored):
+#   SIGNATURE_LOG (default: .signature-log)
 #
 # The applicationId is frozen: com.bodo121.s22updater. Every release must use
-# the same package name and the same release key (v2 since v4.8, see README),
+# the same package name and the same release key (v2, see README),
 # or Android blocks updates.
 set -euo pipefail
 shopt -s globstar nullglob
@@ -37,7 +36,7 @@ VERSION_NAME="$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' "$HERE/Andro
 PKG_NAME="$(sed -n 's/.* package="\([^"]*\)".*/\1/p' "$HERE/AndroidManifest.xml" | head -n 1)"
 [ "$PKG_NAME" = "com.bodo121.s22updater" ] \
   || fail "package name is frozen (found '$PKG_NAME'); changing it breaks updates"
-APK_BASENAME="S22-Updater-v${VERSION_NAME%.0}"
+APK_BASENAME="S22-Updater-v${VERSION_NAME}"
 
 rm -rf "$OUT"
 mkdir -p "$OUT/compiled_res" "$OUT/classes" "$OUT/dex" "$VENDOR" "$VENDOR/shizuku"
@@ -106,7 +105,6 @@ KS="${SIGN_KEYSTORE:-$HERE/debug.keystore}"
 STORE_PASS="${SIGN_STORE_PASS:-android}"
 KEY_PASS="${SIGN_KEY_PASS:-android}"
 KEY_ALIAS="${SIGN_ALIAS:-androiddebugkey}"
-LINEAGE="${SIGN_LINEAGE:-}"
 if [ ! -f "$KS" ]; then
   [ "$KS" = "$HERE/debug.keystore" ] || fail "signing keystore not found: $KS"
   "$JAVA_HOME/bin/keytool" -genkeypair -keystore "$KS" -storepass "$STORE_PASS" \
@@ -115,20 +113,23 @@ if [ ! -f "$KS" ]; then
 fi
 sign_args=(--ks "$KS" --ks-key-alias "$KEY_ALIAS" --ks-pass "pass:$STORE_PASS" \
   --key-pass "pass:$KEY_PASS")
-if [ -n "$LINEAGE" ]; then
-  [ -f "$LINEAGE" ] || fail "signing lineage not found: $LINEAGE"
-  sign_args+=(--lineage "$LINEAGE" --min-sdk-version 28 \
-    --rotation-min-sdk-version "${SIGN_ROTATION_MIN_SDK:-28}" \
-    --v1-signing-enabled false --v2-signing-enabled false --v3-signing-enabled true)
-fi
 "$BT/apksigner" sign "${sign_args[@]}" \
   --out "$OUT/$APK_BASENAME.apk" "$OUT/aligned.apk" || fail "apksigner"
-"$BT/apksigner" verify --verbose --print-certs "$OUT/$APK_BASENAME.apk"
+CERT_REPORT="$("$BT/apksigner" verify --verbose --print-certs "$OUT/$APK_BASENAME.apk")"
+printf '%s\n' "$CERT_REPORT"
 if [ -n "${SIGN_EXPECTED_CERT_SHA256:-}" ]; then
-  "$BT/apksigner" verify --print-certs "$OUT/$APK_BASENAME.apk" 2>/dev/null \
-    | grep -qi "$SIGN_EXPECTED_CERT_SHA256" \
+  printf '%s\n' "$CERT_REPORT" | grep -qi "$SIGN_EXPECTED_CERT_SHA256" \
     || fail "signer does not match SIGN_EXPECTED_CERT_SHA256 (wrong keystore?)"
   echo "build: signer matches expected release certificate"
+fi
+CERT_SHA="$(printf '%s\n' "$CERT_REPORT" | sed -n 's/.*Signer #1 certificate SHA-256 digest: //p' | head -n 1)"
+if [ -n "$CERT_SHA" ]; then
+  LOG_FILE="${SIGNATURE_LOG:-$HERE/.signature-log}"
+  {
+    printf '%s\tpackage=%s\tversion=%s\tapk=%s\tcert=%s\n' \
+      "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$PKG_NAME" "$VERSION_NAME" \
+      "$APK_BASENAME.apk" "$CERT_SHA"
+  } >> "$LOG_FILE"
 fi
 "$BT/zipalign" -c 4 "$OUT/$APK_BASENAME.apk"
 ls -lh "$OUT/$APK_BASENAME.apk"

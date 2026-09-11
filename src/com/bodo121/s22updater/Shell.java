@@ -90,10 +90,24 @@ final class Shell {
 
     static boolean suGrantsRoot(File scratch) {
         try {
-            return runLocal(new String[]{"su", "-c", "id"}, scratch, 15000).contains("uid=0");
+            return outputGrantsRoot(suRootProbe(scratch));
         } catch (Exception e) {
             return false;
         }
+    }
+
+    static String suRootProbe(File scratch) throws Exception {
+        return runLocal(new String[]{"su", "-c",
+                "id -u 2>/dev/null; id; [ -d /sys/module/kernelsu ] && echo KSU=loaded || true"},
+                scratch, 15000);
+    }
+
+    static boolean outputGrantsRoot(String output) {
+        if (output == null) return false;
+        for (String line : output.split("\\n")) {
+            if (line.trim().equals("0")) return true;
+        }
+        return output.contains("uid=0");
     }
 
     // ---------- Shizuku transport ----------

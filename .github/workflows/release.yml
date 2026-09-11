@@ -10,8 +10,7 @@ name: Release Build
 #   SIGN_STORE_PASS          keystore password
 #   SIGN_KEY_PASS            key password
 #   SIGN_ALIAS               key alias
-# signing-lineage.bin is kept in the repo for history only; the v2 key (in
-# use since v4.8) starts its own line, so no lineage is attached.
+# The current v2 key starts a clean signing line; no lineage file is attached.
 # Without secrets the workflow signs with a throwaway debug key and marks the
 # release notes accordingly (that APK cannot update an existing install).
 
@@ -171,7 +170,7 @@ jobs:
               echo "> Signed with a throwaway debug key: this APK installs fresh but cannot update an existing install. Add the signing secrets and re-run for an updatable release."
               echo
             else
-              echo "> Signed with the v2 release key (in use since v4.8). Builds on older keys need a one-time uninstall first; the app's updater detects this and guides you."
+              echo "> Signed with the v2 release key. Builds on older keys need a one-time uninstall first; the app's updater detects this and guides you."
               echo
             fi
             if [ -n "$PREVIOUS_TAG" ]; then
