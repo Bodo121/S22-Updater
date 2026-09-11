@@ -32,6 +32,11 @@
   manager/Shizuku, dismiss, and theme-preset buttons no longer fall back to
   the gear; added a dedicated close icon, and the hero button icon now
   follows the active step.
+- KernelSU verdict is now functional, not loader-based: after firing insmod
+  the app verifies the module is live in sysfs AND that su grants root,
+  instead of trusting the insmod exit code. Reports working / loaded-but-
+  ungranted (with a Manager-approval hint) / failed; covered by host-runnable
+  `VerdictTest` assertions in `tests/check.sh`.
 
 ## 5.0
 

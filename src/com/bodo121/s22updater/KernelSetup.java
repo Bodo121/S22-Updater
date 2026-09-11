@@ -31,14 +31,38 @@ final class KernelSetup {
     }
 
     /**
+     * Pure functional verdict: whether KSU is live and working decides — the
+     * insmod exit code never does (EEXIST when already live, EPERM quirks on
+     * KDP). Kept side-effect free so host tests can assert the mapping.
+     */
+    static String verdict(boolean loaded, boolean suWorks, String lastError) {
+        if (loaded && suWorks)
+            return "KernelSU loaded and working for this boot: module live, su grants root";
+        if (loaded)
+            return "KernelSU loaded but su has not granted this app yet"
+                    + " — approve it in the Manager, then tap Check root";
+        String detail = lastError == null || lastError.isEmpty() ? "module not present" : lastError;
+        return "KernelSU load failed: " + detail;
+    }
+
+    /** Verdict wording for the already-live fast path (same functional rule). */
+    static String alreadyVerdict(boolean suWorks) {
+        if (suWorks)
+            return "KernelSU is already loaded and working for this boot";
+        return "KernelSU is already loaded, but su has not granted this app yet"
+                + " — approve it in the Manager";
+    }
+
+    /**
      * Loads the module through the given transport. Prefers the IONSTACK root
      * helper when a helper path is known (the KDP module needs the manual
-     * loader); falls back to a plain insmod.
+     * loader); falls back to a plain insmod. Loader exit codes are recorded
+     * for diagnostics only — success means KSU is verified working afterwards.
      */
     static String load(String model, Shell.Transport transport, File scratch, String helperPath)
             throws Exception {
         if (isLoaded(transport, scratch))
-            return "KernelSU is already loaded for this boot";
+            return alreadyVerdict(Shell.suGrantsRoot(scratch));
         String release = transport.run("uname -r", scratch);
         if (!"SM-S901B".equals(model) || !RELEASE.equals(release))
             throw new IOException("This KernelSU module requires SM-S901B / S901BXXSNGZD7. Detected: "
@@ -63,30 +87,30 @@ final class KernelSetup {
             }
             transport.run("set -e; actual=$(sha256sum " + qStaged + "); [ \"${actual%% *}\" = '" + SHA
                     + "' ]; mv -f " + qStaged + " " + qDevice, scratch);
-            // The KDP manual loader can report "Operation not permitted" while
-            // the module is actually live, so the final verdict is presence in
-            // /sys/module/kernelsu — not the loader's exit code.
+            // Fire the loader, but its exit code decides nothing: EEXIST when
+            // already live, "Operation not permitted" quirks on KDP while
+            // live. Afterwards, verify KSU is actually working (module live
+            // AND su grants root) instead of trusting insmod.
             String lastError = "";
-            if (helperPath != null && !helperPath.isEmpty()) {
+            if (helperPath != null && !helperPath.isEmpty() && !isLoaded(transport, scratch)) {
                 try {
                     transport.run(Shell.quote(helperPath) + " -c "
-                            + Shell.quote("insmod " + DEVICE_MODULE)
-                            + " && test -d /sys/module/kernelsu", scratch);
-                    return "KernelSU loaded and verified for this boot";
+                            + Shell.quote("insmod " + DEVICE_MODULE), scratch);
+                } catch (Exception e) {
+                    lastError = e.getMessage() == null ? "helper loader failed" : e.getMessage();
+                }
+            }
+            if (!isLoaded(transport, scratch)) {
+                try {
+                    transport.run("insmod " + Shell.quote(DEVICE_MODULE), scratch);
                 } catch (Exception e) {
                     lastError = e.getMessage() == null ? "loader failed" : e.getMessage();
                 }
             }
-            try {
-                transport.run("insmod " + Shell.quote(DEVICE_MODULE)
-                        + " && test -d /sys/module/kernelsu", scratch);
-                return "KernelSU loaded and verified for this boot";
-            } catch (Exception e) {
-                lastError = e.getMessage() == null ? "loader failed" : e.getMessage();
-            }
-            if (isLoaded(transport, scratch))
-                return "KernelSU is loaded and verified (loader warned: " + lastError + ")";
-            throw new IOException("KernelSU load failed: " + lastError);
+            boolean live = isLoaded(transport, scratch);
+            boolean works = live && Shell.suGrantsRoot(scratch);
+            if (!live) throw new IOException(verdict(false, false, lastError));
+            return verdict(true, works, lastError);
         } finally {
             module.delete();
         }

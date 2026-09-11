@@ -10,6 +10,21 @@ mkdir -p "$OUT/host" "$OUT/classes" "$OUT/dex"
 javac -d "$OUT/host" "$HERE/src/com/bodo121/s22updater/Network.java" \
     "$HERE/src/com/bodo121/s22updater/PayloadStore.java" "$HERE/tests/StoreTest.java"
 java -cp "$OUT/host" com.bodo121.s22updater.StoreTest
+# Functional KSU verdict mapping. Needs the Shizuku client jars that build.sh
+# fetches into out/vendor (compile classpath only; the test runs on plain JVM).
+if [ -f "$HERE/out/vendor/shizuku/api/classes.jar" ] \
+    && [ -f "$HERE/out/vendor/shizuku/provider/classes.jar" ]; then
+  VCP="$PLATFORM:$HERE/out/vendor/shizuku/api/classes.jar:$HERE/out/vendor/shizuku/provider/classes.jar"
+  javac -cp "$VCP" -d "$OUT/host" "$HERE/src/com/bodo121/s22updater/Network.java" \
+      "$HERE/src/com/bodo121/s22updater/PayloadStore.java" \
+      "$HERE/src/com/bodo121/s22updater/Shell.java" \
+      "$HERE/src/com/bodo121/s22updater/KernelSetup.java" \
+      "$HERE"/src/moe/shizuku/server/*.java \
+      "$HERE/tests/VerdictTest.java"
+  java -cp "$OUT/host" com.bodo121.s22updater.VerdictTest
+else
+  echo "verdict test skipped: run ./build.sh first for Shizuku client jars"
+fi
 javac --release 8 -classpath "$PLATFORM" -d "$OUT/classes" "$HERE/tests/SmokeTest.java"
 shopt -s globstar
 classes=("$OUT"/classes/**/*.class)
