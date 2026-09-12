@@ -37,6 +37,18 @@
   instead of trusting the insmod exit code. Reports working / loaded-but-
   ungranted (with a Manager-approval hint) / failed; covered by host-runnable
   `VerdictTest` assertions in `tests/check.sh`.
+- Split module-loaded from KSU-su-working in the Home state machine. The flow
+  now stays on KernelSU until su actually grants uid 0, shows a warning chip
+  while the module is live but ungranted, and only marks the Manager step done
+  when a manager is installed and KSU is working.
+- Non-root-flow jobs (app update, changelog, export, diagnostics) no longer
+  clear or paint the Home root stepper's failure state.
+- Theme color buttons are disabled while work is running, so palette changes
+  cannot recreate the Activity and cancel an active exploit/update job.
+- Helper download fallback logging now posts to the UI thread instead of
+  mutating TextViews from a worker thread.
+- `tests/check.sh` now makes verdict tests mandatory even from a clean tree and
+  keeps the smoke-test debug keystore under `out/tests`.
 
 ## 5.0
 

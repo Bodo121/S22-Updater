@@ -42,7 +42,7 @@ public class MainActivity extends Activity {
     private SharedPreferences preferences;
     private Payload selected;
     private File exportFile;
-    private boolean busy, rootGranted, shizukuGranted, exploitRooted, ksuLoaded;
+    private boolean busy, rootGranted, shizukuGranted, exploitRooted, ksuLoaded, ksuWorking;
     private final StringBuilder runLog = new StringBuilder();
     private volatile boolean closed;
     private int bg, surface, ink, muted, accent, border, success, danger, warning, pageIndex;
@@ -209,6 +209,7 @@ public class MainActivity extends Activity {
                     .remove("root_granted")
                     .remove("exploit_rooted")
                     .remove("ksu_loaded")
+                    .remove("ksu_working")
                     .remove("shizuku_granted")
                     .apply();
             return false;
@@ -222,6 +223,7 @@ public class MainActivity extends Activity {
         rootGranted = boot && preferences.getBoolean("root_granted", false);
         exploitRooted = boot && preferences.getBoolean("exploit_rooted", false);
         ksuLoaded = boot && preferences.getBoolean("ksu_loaded", false);
+        ksuWorking = boot && preferences.getBoolean("ksu_working", false);
         shizukuGranted = boot && preferences.getBoolean("shizuku_granted", false);
         pageIndex = preferences.getInt("page", 0);
         String savedRunLog = preferences.getString("run_log", "");
@@ -236,7 +238,7 @@ public class MainActivity extends Activity {
                 preferences.edit().remove("feed_json").apply();
             }
         }
-        restoredProgress |= rootGranted || exploitRooted || ksuLoaded || runLog.length() > 0;
+        restoredProgress |= rootGranted || exploitRooted || ksuLoaded || ksuWorking || runLog.length() > 0;
     }
 
     private void applyRestoredState() {
@@ -245,7 +247,8 @@ public class MainActivity extends Activity {
         status.setText(savedStatus);
         rootStatus.setText(rooted() ? "Root: granted" : "Root: not checked");
         shizukuStatus.setText(shizukuGranted ? "Shizuku: authorized" : "Shizuku: not checked");
-        kernelStatus.setText(ksuLoaded ? "Kernel module: loaded"
+        kernelStatus.setText(ksuWorking ? "KernelSU: working"
+                : ksuLoaded ? "Kernel module: loaded, su not granted"
                 : rooted() ? "Kernel module: not loaded" : "Kernel module: check root first");
         if (runLog.length() > 0) {
             String all = runLog.toString();
@@ -263,6 +266,7 @@ public class MainActivity extends Activity {
                 .putBoolean("root_granted", rootGranted)
                 .putBoolean("exploit_rooted", exploitRooted)
                 .putBoolean("ksu_loaded", ksuLoaded)
+                .putBoolean("ksu_working", ksuWorking)
                 .putBoolean("shizuku_granted", shizukuGranted)
                 .apply();
     }
@@ -545,6 +549,7 @@ public class MainActivity extends Activity {
             Button button = makeButton(name, false);
             button.setTextSize(11);
             button.setOnClickListener(v -> setThemeChoice(value));
+            actions.add(button);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(42), 1);
             if (i > 0) params.leftMargin = dp(6);
             themeRow.addView(button, params);
@@ -612,6 +617,10 @@ public class MainActivity extends Activity {
     }
 
     private void setThemeChoice(String value) {
+        if (busy) {
+            Toast.makeText(this, "Wait for the current action to finish", Toast.LENGTH_SHORT).show();
+            return;
+        }
         preferences.edit().putString("theme_color", value).apply();
         Toast.makeText(this, "Theme color: " + value, Toast.LENGTH_SHORT).show();
         recreate();
@@ -636,9 +645,15 @@ public class MainActivity extends Activity {
 
     private interface Work { void run() throws Exception; }
     private void job(String message, Work work) {
+        job(message, false, work);
+    }
+    private void flowJob(String message, Work work) {
+        job(message, true, work);
+    }
+    private void job(String message, boolean flow, Work work) {
         if (busy || closed) return;
         busy = true;
-        failedStep = "";
+        if (flow) failedStep = "";
         status.setText(message);
         saveStatus(message);
         progress.setIndeterminate(true);
@@ -647,7 +662,7 @@ public class MainActivity extends Activity {
         refreshControls();
         worker.execute(() -> {
             try { work.run(); }
-            catch (Exception e) { post(() -> error(e)); }
+            catch (Exception e) { post(() -> error(e, flow)); }
             finally { post(() -> {
                 busy = false;
                 progress.setVisibility(View.GONE);
@@ -666,8 +681,12 @@ public class MainActivity extends Activity {
     }
 
     private void error(Exception e) {
+        error(e, false);
+    }
+
+    private void error(Exception e, boolean flow) {
         String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-        failedStep = flowStep();
+        if (flow) failedStep = flowStep();
         status.setText(message);
         saveStatus(message);
         log("Failed: " + message);
@@ -756,7 +775,8 @@ public class MainActivity extends Activity {
                     + "Version: " + AppUpdate.installedName(this) + "\n"
                     + "Device: " + Build.MODEL + " / " + Build.DISPLAY + "\n"
                     + "Boot-scoped state: root=" + rootGranted + " exploit=" + exploitRooted
-                    + " ksu=" + ksuLoaded + " shizuku=" + shizukuGranted + "\n"
+                    + " ksuLoaded=" + ksuLoaded + " ksuWorking=" + ksuWorking
+                    + " shizuku=" + shizukuGranted + "\n"
                     + "Selected payload: " + (selected == null ? "none" : selected.id) + "\n\n"
                     + "--- visible status ---\n" + status.getText() + "\n\n"
                     + "--- run log ---\n" + runLog + "\n\n"
@@ -816,7 +836,7 @@ public class MainActivity extends Activity {
         if (!payloadReady()) return "download";
         if (!transportReady()) return "transport";
         if (!rooted()) return "run";
-        if (!ksuLoaded) return "ksu";
+        if (!ksuWorking) return "ksu";
         return "done";
     }
 
@@ -828,6 +848,10 @@ public class MainActivity extends Activity {
             case "transport": checkRoot(); break;
             case "run": runExploit(); break;
             case "ksu": {
+                if (ksuLoaded && !ksuWorking) {
+                    checkRoot();
+                    break;
+                }
                 final Shell.Transport transport = pickTransport();
                 if (transport == null) {
                     status.setText("No privileged shell for KernelSU setup");
@@ -837,7 +861,7 @@ public class MainActivity extends Activity {
                             this::checkShizuku, "Close", null);
                     return;
                 }
-                job("Setting up KernelSU…", () -> setupKernel(transport));
+                flowJob("Setting up KernelSU…", () -> setupKernel(transport));
                 break;
             }
             default: openManager(); break;
@@ -871,12 +895,13 @@ public class MainActivity extends Activity {
             case "download": flowAction.setText("Download payload"); break;
             case "transport": flowAction.setText("Check root access"); break;
             case "run": flowAction.setText("Run exploit"); break;
-            case "ksu": flowAction.setText("Load KernelSU"); break;
+            case "ksu": flowAction.setText(ksuLoaded ? "Check KernelSU root" : "Load KernelSU"); break;
             case "done": flowAction.setText("Open KernelSU Manager"); break;
             default: flowAction.setText("Working…"); break;
         }
         applyIcon(flowAction, flowAction.getText().toString(), true);
-        flowHint.setText(ksuLoaded ? "KernelSU is active for this boot."
+        flowHint.setText(ksuWorking ? "KernelSU is active for this boot."
+                : ksuLoaded ? "KernelSU module is live. Approve this app in Manager, then check root."
                 : rooted() ? "Root verified. Next: load KernelSU."
                 : transportReady() ? "Shell ready. Next: run the exploit."
                 : payloadReady() ? "Payload verified. Next: root access."
@@ -888,15 +913,17 @@ public class MainActivity extends Activity {
                 "Payload" + (payloadReady() ? " — verified" : ""));
         markStep(stepRoot, rooted(), "transport".equals(step) || "run".equals(step),
                 "Root access" + (rooted() ? " — granted" : ""));
-        markStep(stepKsu, ksuLoaded, "ksu".equals(step),
-                "KernelSU" + (ksuLoaded ? " — loaded" : ""));
+        markStep(stepKsu, ksuWorking, "ksu".equals(step),
+                "KernelSU" + (ksuWorking ? " — working" : ksuLoaded ? " — waiting for su" : ""));
         if (flowStepper != null) {
+            boolean manager = managerInstalled();
             flowStepper.setState(feedReady(), payloadReady(), transportReady(), rooted(),
-                    ksuLoaded, ksuLoaded, stepIndex(stateStep), failedStep.isEmpty() ? -1 : stepIndex(failedStep));
+                    ksuWorking, manager && ksuWorking, stepIndex(stateStep),
+                    failedStep.isEmpty() ? -1 : stepIndex(failedStep));
             if (busy) flowStepper.pulse();
         }
         if (statusCardView != null) {
-            int fill = failedStep.isEmpty() ? (ksuLoaded ? blend(success, surface, .9f)
+            int fill = failedStep.isEmpty() ? (ksuWorking ? blend(success, surface, .9f)
                     : busy ? blend(accent, surface, .9f) : surface)
                     : blend(danger, surface, .9f);
             statusCardView.setBackground(shape(fill, 22));
@@ -912,10 +939,14 @@ public class MainActivity extends Activity {
     private void updateRootChip() {
         if (rootChip == null) return;
         int color;
-        if (ksuLoaded && rootGranted) {
-            rootChip.setText("  Root + KSU Active  ");
+        if (ksuWorking) {
+            rootChip.setText("  KSU Root Active  ");
             color = success;
             rootChip.setBackground(shape(blend(success, surface, .86f), 999));
+        } else if (ksuLoaded) {
+            rootChip.setText("  KSU Loaded: Grant su  ");
+            color = warning;
+            rootChip.setBackground(shape(blend(warning, surface, .86f), 999));
         } else if (rootGranted || exploitRooted) {
             rootChip.setText("  Root Active  ");
             color = success;
@@ -953,7 +984,7 @@ public class MainActivity extends Activity {
 
     private void checkFeed() {
         final String url = preferences.getString("feed_url", FEED);
-        job("Loading targets feed…", () -> {
+        flowJob("Loading targets feed…", () -> {
             String feedText = Network.text(url);
             JSONObject feed = new JSONObject(feedText);
             if (feed.optInt("schemaVersion", 3) != 3) throw new IOException("Only schema-v3 feeds are supported");
@@ -992,7 +1023,7 @@ public class MainActivity extends Activity {
     private void download() {
         final Payload p = selected;
         if (p == null) return;
-        job("Downloading update…", () -> {
+        flowJob("Downloading update…", () -> {
             File target = localFile(p);
             File part = File.createTempFile("download-", ".part", getFilesDir());
             final int[] last = {-1};
@@ -1019,7 +1050,7 @@ public class MainActivity extends Activity {
 
     private void checkRoot() {
         final boolean autoKernel = preferences.getBoolean("auto_kernel", false);
-        job("Checking root access…", () -> {
+        flowJob("Checking root access…", () -> {
             boolean granted = false;
             String result;
             try {
@@ -1031,7 +1062,12 @@ public class MainActivity extends Activity {
             final String detail = result;
             post(() -> {
                 rootGranted = ok;
-                if (ok && ksuSeen) ksuLoaded = true;
+                if (ok && ksuSeen) {
+                    ksuLoaded = true;
+                    ksuWorking = true;
+                } else {
+                    ksuWorking = false;
+                }
                 saveVolatileState();
                 rootStatus.setText(ok ? "Root: granted" : "Root: not granted");
                 status.setText(ok ? "Root check passed" : "Root access not granted"
@@ -1043,7 +1079,7 @@ public class MainActivity extends Activity {
                                 .setDuration(130).start()).start();
                 updateManager();
                 log("Root check: " + detail);
-                if (ok && ksuSeen) kernelStatus.setText("Kernel module: loaded");
+                if (ok && ksuSeen) kernelStatus.setText("KernelSU: working");
                 else if (!ok) kernelStatus.setText("Kernel module: root access needed to check");
             });
             if (ok) {
@@ -1051,13 +1087,16 @@ public class MainActivity extends Activity {
                 // Root granted: if the module is already live, autocomplete the
                 // KernelSU stage instead of re-running the loader.
                 if (KernelSetup.isLoaded(transport, getCacheDir())) ksuLoaded = true;
+                if (ksuLoaded && Shell.suGrantsRoot(getCacheDir())) ksuWorking = true;
                 saveVolatileState();
                 if (autoKernel && !ksuLoaded) {
                     setupKernel(transport);
                 } else {
+                    final boolean working = ksuWorking;
                     final boolean present = ksuLoaded;
-                    post(() -> kernelStatus.setText(present
-                            ? "Kernel module: loaded" : "Kernel module: not loaded"));
+                    post(() -> kernelStatus.setText(working ? "KernelSU: working"
+                            : present ? "Kernel module: loaded, su not granted"
+                            : "Kernel module: not loaded"));
                 }
             }
         });
@@ -1077,7 +1116,7 @@ public class MainActivity extends Activity {
 
     private void checkShizuku() {
         preferences.edit().putBoolean("shizuku_wanted", true).apply();
-        job("Checking Shizuku shell…", () -> {
+        flowJob("Checking Shizuku shell…", () -> {
             if (!Shell.awaitShizukuRunning(this, 4000)) {
                 post(() -> {
                     shizukuGranted = false;
@@ -1087,6 +1126,7 @@ public class MainActivity extends Activity {
                             : "Shizuku: not installed");
                     status.setText(Shell.describeShizukuState());
                     log(Shell.describeShizukuState());
+                    updateFlow();
                     showSheet("Shizuku not connected", "Shizuku Manager is installed, but "
                             + "this app did not receive Shizuku's binder after waiting. Open "
                     + "Shizuku, confirm the service says Running, then return here. If "
@@ -1103,6 +1143,7 @@ public class MainActivity extends Activity {
                     shizukuStatus.setText("Shizuku: authorized");
                     status.setText("Shizuku shell ready");
                     log("Shizuku shell ready");
+                    updateFlow();
                 });
                 return;
             }
@@ -1120,6 +1161,7 @@ public class MainActivity extends Activity {
                         status.setText(granted ? "Shizuku shell ready"
                                 : "Shizuku authorization denied");
                         log(granted ? "Shizuku authorized" : "Shizuku authorization denied");
+                        updateFlow();
                     });
                 }
             });
@@ -1154,11 +1196,7 @@ public class MainActivity extends Activity {
             } catch (Exception ignored) {
             }
             String result = KernelSetup.load(Build.MODEL, transport, getCacheDir(), helper);
-            if (result.startsWith("KernelSU loaded") || result.startsWith("KernelSU is")) {
-                adoptKsuSu(result);
-            } else {
-                post(() -> { kernelStatus.setText(result); status.setText(result); saveStatus(result); log(result); });
-            }
+            adoptKsuSu(result);
         } catch (Exception e) {
             String hint = (transport instanceof Shell.ShizukuShell) && !rootGranted
                     ? " Loading needs real root (su) — a Shizuku shell cannot insmod. "
@@ -1178,6 +1216,7 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {
         }
         if (suNow) rootGranted = true;
+        ksuWorking = suNow;
         saveVolatileState();
         final boolean suReady = suNow;
         post(() -> {
@@ -1188,6 +1227,7 @@ public class MainActivity extends Activity {
             log(result);
             if (suReady) {
                 rootStatus.setText("Root: granted (KernelSU su)");
+                kernelStatus.setText("KernelSU: working");
                 rootStatus.animate().scaleX(1.04f).scaleY(1.04f).setDuration(110)
                         .withEndAction(() -> rootStatus.animate().scaleX(1f).scaleY(1f)
                                 .setDuration(130).start()).start();
@@ -1199,12 +1239,20 @@ public class MainActivity extends Activity {
     }
 
     private void updateManager() {
-        String found = null;
+        String found = managerPackage();
+        managerStatus.setText(found == null ? "Manager not detected" : "Manager installed\n" + found);
+    }
+
+    private boolean managerInstalled() {
+        return managerPackage() != null;
+    }
+
+    private String managerPackage() {
         for (String id : MANAGERS) {
-            try { getPackageManager().getPackageInfo(id, 0); found = id; break; }
+            try { getPackageManager().getPackageInfo(id, 0); return id; }
             catch (android.content.pm.PackageManager.NameNotFoundException ignored) { }
         }
-        managerStatus.setText(found == null ? "Manager not detected" : "Manager installed\n" + found);
+        return null;
     }
 
     private void openManager() {
@@ -1232,7 +1280,7 @@ public class MainActivity extends Activity {
             return;
         }
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-        job("Running exploit via " + transport.name() + "…", () -> {
+        flowJob("Running exploit via " + transport.name() + "…", () -> {
             File payloadFile = localFile(p);
             if (!payloadFile.isFile()) {
                 post(() -> status.setText("Downloading payload first…"));
@@ -1320,7 +1368,8 @@ public class MainActivity extends Activity {
                 }
                 ok = true;
             } catch (Exception e) {
-                log("Helper download failed: " + e.getMessage());
+                String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                post(() -> log("Helper download failed: " + message));
             }
             if (ok) {
                 stageExecutable(transport, cached, HELPER_DEVICE_PATH,
@@ -1402,7 +1451,7 @@ public class MainActivity extends Activity {
     private void promptKernelSu(final Shell.Transport transport, final String helperPath) {
         post(() -> showSheet("Exploit completed", "Root verified through the exploit helper.\n\n"
                 + "Install KernelSU now?", "Install KernelSU", () ->
-                job("Setting up KernelSU…", () -> {
+                flowJob("Setting up KernelSU…", () -> {
                     try {
                         String result = KernelSetup.load(Build.MODEL, transport,
                                 getCacheDir(), helperPath);
@@ -1410,7 +1459,7 @@ public class MainActivity extends Activity {
                     } catch (Exception e) {
                         post(() -> kernelStatus.setText(
                                 "KernelSU setup failed: " + e.getMessage()));
-                        throw new RuntimeException(e);
+                        throw e;
                     }
                 }), "Later", null));
     }
