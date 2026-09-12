@@ -19,13 +19,13 @@ if [ ! -f "$HERE/out/vendor/shizuku/api/classes.jar" ] \
   mkdir -p "$OUT/host" "$OUT/classes" "$OUT/dex"
 fi
 VCP="$PLATFORM:$HERE/out/vendor/shizuku/api/classes.jar:$HERE/out/vendor/shizuku/provider/classes.jar"
-javac -cp "$VCP" -d "$OUT/host" "$HERE/src/com/bodo121/s22updater/Network.java" \
-    "$HERE/src/com/bodo121/s22updater/PayloadStore.java" \
-    "$HERE/src/com/bodo121/s22updater/Shell.java" \
-    "$HERE/src/com/bodo121/s22updater/KernelSetup.java" \
-    "$HERE"/src/moe/shizuku/server/*.java \
-    "$HERE/tests/VerdictTest.java"
+javac -d "$OUT/host" "$HERE/src/com/bodo121/s22updater/CommandResult.java" \
+    "$HERE/src/com/bodo121/s22updater/CommandRunner.java" \
+    "$HERE/src/com/bodo121/s22updater/RootState.java" \
+    "$HERE/src/com/bodo121/s22updater/KernelSuController.java" \
+    "$HERE/tests/VerdictTest.java" "$HERE/tests/CommandTest.java"
 java -cp "$OUT/host" com.bodo121.s22updater.VerdictTest
+java -cp "$OUT/host" com.bodo121.s22updater.CommandTest
 javac --release 8 -classpath "$PLATFORM" -d "$OUT/classes" "$HERE/tests/SmokeTest.java"
 shopt -s globstar
 classes=("$OUT"/classes/**/*.class)

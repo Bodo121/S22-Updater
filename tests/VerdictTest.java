@@ -1,61 +1,42 @@
 package com.bodo121.s22updater;
 
-import java.io.File;
+import static com.bodo121.s22updater.KernelSuController.*;
 
-/**
- * Host-runnable assertions for the functional KSU verdict: module state plus
- * su decides, never the insmod exit code. Runs on a plain JVM (no Android).
- */
 public final class VerdictTest {
-    private static void check(boolean cond, String name) {
-        if (!cond) throw new AssertionError("Verdict: " + name);
-        System.out.println("Verdict OK: " + name);
+    static void check(boolean ok, String name) {
+        if (!ok) throw new AssertionError(name);
+        System.out.println(name + ": PASS");
     }
-
-    public static void main(String[] args) {
-        // Loader exit codes never decide: ignored whenever the module is live.
-        check(KernelSetup.verdict(true, true, "Exit 1: File exists")
-                .startsWith("KernelSU loaded"), "live+su ignores loader error");
-        check(KernelSetup.verdict(true, true, "").contains("working"), "live+su is working");
-        check(!KernelSetup.verdict(true, false, "Exit 1: boom").contains("failed"),
-                "live without su is not failure");
-        check(KernelSetup.verdict(true, false, "").contains("Manager"),
-                "live without su guides to Manager");
-        check(KernelSetup.verdict(false, false, "Exit 1: EPERM")
-                .startsWith("KernelSU load failed"), "absent is failure");
-        check(KernelSetup.verdict(false, false, "Exit 1: EPERM").contains("EPERM"),
-                "failure keeps loader detail");
-        check(KernelSetup.verdict(false, false, "").contains("not present"),
-                "empty error fallback");
-        check(KernelSetup.alreadyVerdict(true).startsWith("KernelSU is"),
-                "already prefix routes to adopt");
-        check(KernelSetup.alreadyVerdict(false).contains("Manager"),
-                "already without su guides to Manager");
-
-        // Presence tolerance through a fake transport.
-        check(KernelSetup.isLoaded(new FakeTransport("loaded"), new File("/tmp")),
-                "isLoaded exact");
-        check(KernelSetup.isLoaded(new FakeTransport("loaded plus extra words"), new File("/tmp")),
-                "isLoaded tolerant");
-        check(!KernelSetup.isLoaded(new FakeTransport("absent"), new File("/tmp")),
-                "isLoaded absent");
-        check(!KernelSetup.isLoaded(new FakeTransport(null, true), new File("/tmp")),
-                "isLoaded throwing transport");
-
+    static CommandResult cmd(int exit, String stdout, String stderr) {
+        return new CommandResult(exit, stdout, stderr, false, null);
+    }
+    public static void main(String[] args) throws Exception {
+        check(evaluate(cmd(0, "", ""), Presence.PRESENT).state == State.MODULE_LOADED, "testSilentInsmodSuccess");
+        check(evaluate(cmd(0, "", ""), Presence.ABSENT).state == State.VERIFICATION_FAILED, "testMissingModuleAfterExitZero");
+        check(evaluate(cmd(1, "", "EPERM"), Presence.ABSENT).state == State.LOAD_FAILED, "testRealLoadFailure");
+        final int[] executions = {0};
+        Result already = load(new Operations() {
+            public Presence probe() { return Presence.PRESENT; }
+            public CommandResult insmod() { executions[0]++; return cmd(0, "", ""); }
+            public void pause() { }
+        });
+        check(already.loaded() && executions[0] == 0, "testAlreadyLoadedSkipsInsmod");
+        check(evaluate(cmd(1, "", "File exists"), Presence.PRESENT).loaded(), "testAlreadyLoadedError");
+        check(authorization(Presence.PRESENT, cmd(1, "", "denied")) == State.WAITING_FOR_MANAGER_PERMISSION, "testPermissionPending");
+        check(authorization(Presence.PRESENT, cmd(0, "0\n", "")) == State.ROOT_GRANTED, "testFullRoot");
+        check(!RootState.sameBoot("boot1", "boot2") && !RootState.sameBoot("unknown", "unknown"), "testBootReset");
+        RootState restored = new RootState("boot1", false, Presence.PRESENT, false);
+        check(restored.module == Presence.PRESENT && RootState.sameBoot("boot1", restored.bootId), "testRestartRediscovery");
+        check(!RootState.uidZero("error uid=0 requested") && !RootState.uidZero("uid=01")
+                && RootState.uidZero("uid=0(root) gid=0(root)"), "testUidParsing");
+        check(evaluate(new CommandResult(-1, "", "", true, null), Presence.ABSENT).state == State.LOAD_FAILED, "testTimeout");
+        check(evaluate(cmd(1, "", "permission denied"), Presence.UNKNOWN).state == State.VERIFICATION_FAILED, "testUnknownProbe");
+        final int[] probes = {0};
+        check(load(new Operations() {
+            public Presence probe() { return ++probes[0] < 3 ? Presence.ABSENT : Presence.PRESENT; }
+            public CommandResult insmod() { return cmd(0, "", ""); }
+            public void pause() { }
+        }).loaded(), "testDelayedModuleVisibility");
         System.out.println("PASS: functional KSU verdict mapping");
-    }
-
-    static final class FakeTransport implements Shell.Transport {
-        private final String out;
-        private final boolean fail;
-        FakeTransport(String out) { this(out, false); }
-        FakeTransport(String out, boolean fail) { this.out = out; this.fail = fail; }
-        @Override public String name() { return "fake"; }
-        @Override public String run(String command, File scratch) throws Exception {
-            if (fail) throw new java.io.IOException("fake transport down");
-            return out;
-        }
-        @Override public void writeFile(File source, String remotePath, String mode) { }
-        @Override public Shell.Proc start(String[] cmd, String[] env) { return null; }
     }
 }

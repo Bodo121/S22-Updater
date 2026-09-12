@@ -32,7 +32,7 @@ public class MainActivity extends Activity {
     private TextView status, flowHint, rootStatus, shizukuStatus, managerStatus,
             kernelStatus, activityLog, changelog, appUpdateStatus, installPermStatus,
             stepFeed, stepPayload, stepRoot, stepKsu, deviceInfo, homeLog,
-            rootChip, appearanceStatus, logEmpty;
+            rootChip, appearanceStatus, logEmpty, doctorStatus;
     private LinearLayout statusCardView;
     private FlowStepper flowStepper;
     private ProgressBar progress;
@@ -42,16 +42,17 @@ public class MainActivity extends Activity {
     private SharedPreferences preferences;
     private Payload selected;
     private File exportFile;
+    private final RootWorkflowController workflow = new RootWorkflowController();
+    private DeviceInspector.Snapshot deviceSnapshot;
     private boolean busy, rootGranted, shizukuGranted, exploitRooted, ksuLoaded, ksuWorking;
     private final StringBuilder runLog = new StringBuilder();
     private volatile boolean closed;
     private int bg, surface, ink, muted, accent, border, success, danger, warning, pageIndex;
     private boolean restoredProgress;
+    private boolean deviceChecked, advancedMode;
     private String failedStep = "";
 
     static final String HELPER_DEVICE_PATH = "/data/local/tmp/cve-2026-43499-root";
-    static final String EXPLOIT_DEVICE_PATH = "/data/local/tmp/cve-2026-43499";
-    static final String EXPLOIT_LOG_PATH = "/data/local/tmp/cve-exploit.log";
 
     private static final class Payload {
         final String id, name, url, sha;
@@ -82,6 +83,7 @@ public class MainActivity extends Activity {
                 helperSize = 0;
                 helperSha = "";
             }
+            Compatibility.requirePinned(id, url, size, sha, helperUrl, helperSize, helperSha);
         }
     }
 
@@ -144,6 +146,7 @@ public class MainActivity extends Activity {
         updateManager();
         refreshControls();
         watchShizukuBinder();
+        rediscoverAsync();
         if (restoredProgress) log("Progress restored for this boot.");
         else log("Ready. One button walks the whole flow: update info, payload, exploit, KernelSU.");
         if (preferences.getBoolean("auto_app_update", false)) checkAppUpdate();
@@ -483,9 +486,13 @@ public class MainActivity extends Activity {
         managerStatus = text(manager, "Checking manager…", 16, ink, true);
         kernelStatus = text(manager, "Kernel module: check root first", 14, muted, false);
         action(manager, "Open KernelSU Manager", this::openManager);
+        action(manager, "Recheck KernelSU", this::rediscoverAsync);
         LinearLayout device = card(pages[0], "DEVICE");
         deviceInfo = text(device, "", 13, muted, false);
         deviceInfo.setTextIsSelectable(true);
+        doctorStatus = text(device, "Device Doctor has not run yet.", 13, muted, false);
+        doctorStatus.setTextIsSelectable(true);
+        action(device, "Run Device Doctor", this::runDoctor);
         LinearLayout live = card(pages[0], "LIVE LOG");
         homeLog = text(live, "Run output appears here while the exploit runs.", 12, ink, false);
         homeLog.setTypeface(Typeface.MONOSPACE);
@@ -505,6 +512,7 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "Diagnostics copied", Toast.LENGTH_SHORT).show();
         });
         action(history, "Share diagnostics", this::shareDiagnostics);
+        action(history, "Copy GitHub issue report", this::copyIssueReport);
         LinearLayout changes = card(pages[1], "PROJECT CHANGELOG");
         action(changes, "Refresh changelog", this::loadChangelog);
         changelog = text(changes, "No changelog loaded yet. Tap Refresh changelog.", 14, muted, false);
@@ -584,6 +592,12 @@ public class MainActivity extends Activity {
             }
             export();
         });
+        action(payloadCard, "Clear payload cache", () -> {
+            int count = PayloadCache.clear(getFilesDir());
+            Toast.makeText(this, "Cleared " + count + " cached file(s)", Toast.LENGTH_SHORT).show();
+            if (count > 0) { selected = null; preferences.edit().remove("feed_json").apply(); }
+            refreshControls();
+        });
         text(payloadCard, "Saves the verified payload to a file you choose.", 13, muted, false);
         LinearLayout options = card(pages[2], "OPTIONS");
         automaticKernel = new Switch(this);
@@ -594,6 +608,18 @@ public class MainActivity extends Activity {
         automaticKernel.setOnCheckedChangeListener((button, checked) ->
                 preferences.edit().putBoolean("auto_kernel", checked).apply());
         options.addView(automaticKernel, new LinearLayout.LayoutParams(-1, -2));
+        Switch advanced = new Switch(this);
+        advanced.setText("Advanced diagnostics mode");
+        advanced.setTextColor(ink);
+        advanced.setPadding(0, dp(12), 0, dp(12));
+        advancedMode = preferences.getBoolean("advanced_mode", false);
+        advanced.setChecked(advancedMode);
+        advanced.setOnCheckedChangeListener((button, checked) -> {
+            advancedMode = checked;
+            preferences.edit().putBoolean("advanced_mode", checked).apply();
+            updateFlow();
+        });
+        options.addView(advanced, new LinearLayout.LayoutParams(-1, -2));
         text(options, "When enabled, a successful root check also loads the matching module. It skips a module already loaded.", 13, muted, false);
         LinearLayout about = card(pages[2], "ABOUT THIS BUILD");
         text(about, "S22 Updater " + AppUpdate.installedName(this), 20, ink, true);
@@ -768,19 +794,10 @@ public class MainActivity extends Activity {
 
     private void shareDiagnostics() {
         try {
+            String body = diagnosticsText();
             File dir = new File(getCacheDir(), "share");
             if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("No share cache");
             File file = new File(dir, "diagnostics.txt");
-            String body = "S22 Updater diagnostics\n"
-                    + "Version: " + AppUpdate.installedName(this) + "\n"
-                    + "Device: " + Build.MODEL + " / " + Build.DISPLAY + "\n"
-                    + "Boot-scoped state: root=" + rootGranted + " exploit=" + exploitRooted
-                    + " ksuLoaded=" + ksuLoaded + " ksuWorking=" + ksuWorking
-                    + " shizuku=" + shizukuGranted + "\n"
-                    + "Selected payload: " + (selected == null ? "none" : selected.id) + "\n\n"
-                    + "--- visible status ---\n" + status.getText() + "\n\n"
-                    + "--- run log ---\n" + runLog + "\n\n"
-                    + "--- session log ---\n" + activityLog.getText() + "\n";
             try (FileOutputStream out = new FileOutputStream(file)) {
                 out.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
                 out.getFD().sync();
@@ -796,7 +813,128 @@ public class MainActivity extends Activity {
         }
     }
 
+    private String diagnosticsText() {
+        return "S22 Updater diagnostics\n"
+                + "Timestamp: " + new Date() + "\n"
+                + "Version: " + AppUpdate.installedName(this) + "\n"
+                + (deviceSnapshot == null ? "Device: " + Build.MANUFACTURER + " " + Build.MODEL
+                + " / " + Build.DISPLAY + "\n" : deviceSnapshot.report() + "\n")
+                + stateReport() + "\n\n"
+                + "Selected payload: " + (selected == null ? "none" : selected.id) + "\n"
+                + "Payload SHA verified: " + (selected != null && PayloadCache.verified(getFilesDir(), selected.id, selected.size, selected.sha)) + "\n"
+                + "Exploit attempt count: " + ExploitRunner.ATTEMPTS + "\n"
+                + "KernelSU module URL: " + KernelSetup.URL + "\n"
+                + "KernelSU module SHA-256: " + KernelSetup.SHA + "\n\n"
+                + "--- visible status ---\n" + status.getText() + "\n\n"
+                + "--- run log ---\n" + runLog + "\n\n"
+                + "--- session log ---\n" + activityLog.getText() + "\n";
+    }
+
+    private void copyIssueReport() {
+        String template = "### Device\nModel: " + Build.MODEL + "\nAndroid: " + Build.VERSION.RELEASE
+                + "\nFirmware: " + (deviceSnapshot == null ? Build.DISPLAY : deviceSnapshot.firmware)
+                + "\nKernel: " + (deviceSnapshot == null ? "unknown" : deviceSnapshot.kernel)
+                + "\nSecurity patch: " + Build.VERSION.SECURITY_PATCH + "\n\n"
+                + "### S22-Updater\nVersion: " + AppUpdate.installedName(this)
+                + "\nWorkflow state:\n" + workflow.report() + "\n\n"
+                + "### Temporary root\nState: " + (exploitRooted ? "active" : "not active")
+                + "\nExploit result: " + (rooted() ? "verified" : "not verified")
+                + "\nAttempt count: " + ExploitRunner.ATTEMPTS + "\n\n"
+                + "### KernelSU\nModule loaded: " + ksuLoaded
+                + "\ninsmod exit: see diagnostics log"
+                + "\nstdout: see diagnostics log\nstderr: see diagnostics log"
+                + "\nModule verification: " + (ksuLoaded ? "present" : "absent/unknown")
+                + "\nsu authorization: " + (ksuWorking ? "uid 0" : ksuLoaded ? "pending" : "not applicable")
+                + "\n\n### Error\nMessage: " + status.getText() + "\nException: \n\n### Notes\n";
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        clipboard.setPrimaryClip(ClipData.newPlainText("S22 Updater issue report", template));
+        Toast.makeText(this, "Issue report copied", Toast.LENGTH_SHORT).show();
+    }
+
     private File localFile(Payload p) throws Exception { return PayloadStore.file(getFilesDir(), p.id); }
+
+    private void runDoctor() {
+        flowJob("Checking device compatibility…", () -> {
+            workflow.enter(RootWorkflowController.Step.CHECKING_DEVICE);
+            DeviceInspector.Snapshot snap = DeviceInspector.inspect(MainActivity.this);
+            deviceSnapshot = snap;
+            deviceChecked = true;
+            workflow.enter(RootWorkflowController.Step.CHECKING_COMPATIBILITY);
+            workflow.finish(!snap.supported());
+            rediscover();
+            post(() -> {
+                String report = snap.report() + "\n\n" + stateReport();
+                doctorStatus.setText(report);
+                status.setText(snap.supported() ? "Device Doctor: supported" : "UNSUPPORTED BUILD");
+                saveStatus(status.getText().toString());
+                log("[DEVICE]\n" + report);
+                updateFlow();
+            });
+        });
+    }
+
+    private void requireSupported() throws IOException {
+        if (!deviceChecked || deviceSnapshot == null) {
+            deviceSnapshot = DeviceInspector.inspect(this);
+            deviceChecked = true;
+        }
+        Compatibility.require(deviceSnapshot);
+    }
+
+    private void rediscoverAsync() {
+        if (busy || closed) return;
+        job("Rechecking device state…", () -> {
+            if (deviceSnapshot == null) {
+                deviceSnapshot = DeviceInspector.inspect(MainActivity.this);
+                deviceChecked = true;
+            }
+            rediscover();
+        });
+    }
+
+    private void rediscover() throws Exception {
+        KernelSuController.Presence module = KernelSetup.presence(null, getCacheDir());
+        boolean moduleLoaded = module == KernelSuController.Presence.PRESENT;
+        CommandResult su = CommandRunner.local(new String[]{"su", "-c",
+                "id -u 2>/dev/null; id; [ -d /sys/module/kernelsu ] && echo KSU=loaded || true"},
+                getCacheDir(), 15000);
+        boolean suRoot = su.succeeded() && RootState.uidZero(su.stdout);
+        boolean suShowsKsu = su.stdout.contains("KSU=loaded");
+        boolean helperRoot = false;
+        if (suRoot) {
+            try { helperRoot = ExploitRunner.helperRoot(new Shell.Su(), getCacheDir()); }
+            catch (Exception ignored) { }
+        }
+        rootGranted = suRoot;
+        exploitRooted = helperRoot || (exploitRooted && sameBoot());
+        ksuLoaded = moduleLoaded || suShowsKsu;
+        ksuWorking = ksuLoaded && suRoot;
+        if (!ksuLoaded) ksuWorking = false;
+        saveVolatileState();
+        post(() -> {
+            rootStatus.setText(ksuWorking ? "Root: granted (KernelSU su)"
+                    : rootGranted ? "Root: granted" : exploitRooted ? "Root: temporary helper active"
+                    : "Root: not granted");
+            kernelStatus.setText(ksuWorking ? "KernelSU: working"
+                    : ksuLoaded ? "KernelSU loaded successfully. Waiting for KernelSU Manager permission."
+                    : "Kernel module: not loaded");
+            if (doctorStatus != null && deviceSnapshot != null)
+                doctorStatus.setText(deviceSnapshot.report() + "\n\n" + stateReport());
+            log("[FLOW] State rediscovered\n" + stateReport() + "\n[SU]\n" + su.diagnostic());
+            updateManager();
+            updateFlow();
+        });
+    }
+
+    private String stateReport() {
+        return "Temporary root: " + (exploitRooted ? "active" : "not active")
+                + "\nRoot grant: " + (rootGranted ? "uid 0 verified" : "not granted")
+                + "\nKernelSU module: " + (ksuLoaded ? "loaded" : "not loaded")
+                + "\nKernelSU authorization: " + (ksuWorking ? "uid 0 verified" : ksuLoaded ? "WAITING_FOR_MANAGER_PERMISSION" : "not applicable")
+                + "\nManager: " + (managerInstalled() ? "installed" : "not installed")
+                + "\nPayload cache: " + (selected != null && PayloadCache.verified(getFilesDir(), selected.id, selected.size, selected.sha) ? "verified" : "not verified")
+                + "\nWorkflow state:\n" + workflow.report();
+    }
 
     private void refreshControls() {
         for (Button button : actions) { button.setEnabled(!busy); button.setAlpha(busy ? .5f : 1f); }
@@ -830,8 +968,14 @@ public class MainActivity extends Activity {
         return rootGranted || exploitRooted;
     }
 
+    private boolean supportedDevice() {
+        return deviceSnapshot != null && deviceSnapshot.supported();
+    }
+
     /** One step at a time: feed → download → transport → run → ksu → done. */
     private String flowStep() {
+        if (!deviceChecked) return "device";
+        if (!supportedDevice()) return "unsupported";
         if (!feedReady()) return "feed";
         if (!payloadReady()) return "download";
         if (!transportReady()) return "transport";
@@ -843,13 +987,15 @@ public class MainActivity extends Activity {
     private void primaryAction() {
         if (busy) return;
         switch (flowStep()) {
+            case "device": runDoctor(); break;
+            case "unsupported": runDoctor(); break;
             case "feed": checkFeed(); break;
             case "download": download(); break;
             case "transport": checkRoot(); break;
             case "run": runExploit(); break;
             case "ksu": {
                 if (ksuLoaded && !ksuWorking) {
-                    checkRoot();
+                    openManager();
                     break;
                 }
                 final Shell.Transport transport = pickTransport();
@@ -877,6 +1023,8 @@ public class MainActivity extends Activity {
     private int stepIndex(String step) {
         switch (step) {
             case "feed": return 0;
+            case "device": return 0;
+            case "unsupported": return 0;
             case "download": return 1;
             case "transport": return 2;
             case "run": return 3;
@@ -892,23 +1040,28 @@ public class MainActivity extends Activity {
         String stateStep = step.isEmpty() ? flowStep() : step;
         switch (step) {
             case "feed": flowAction.setText("Check for updates"); break;
+            case "device": flowAction.setText("Run Device Doctor"); break;
+            case "unsupported": flowAction.setText("Unsupported build"); break;
             case "download": flowAction.setText("Download payload"); break;
             case "transport": flowAction.setText("Check root access"); break;
             case "run": flowAction.setText("Run exploit"); break;
-            case "ksu": flowAction.setText(ksuLoaded ? "Check KernelSU root" : "Load KernelSU"); break;
+            case "ksu": flowAction.setText(ksuLoaded ? "Open KernelSU Manager" : "Load KernelSU"); break;
             case "done": flowAction.setText("Open KernelSU Manager"); break;
             default: flowAction.setText("Working…"); break;
         }
         applyIcon(flowAction, flowAction.getText().toString(), true);
-        flowHint.setText(ksuWorking ? "KernelSU is active for this boot."
+        flowHint.setText(!deviceChecked ? "Start with Device Doctor so exact-build compatibility is known."
+                : !supportedDevice() ? "Unsupported build. This app will not run the root workflow here."
+                : ksuWorking ? "KernelSU is active for this boot."
                 : ksuLoaded ? "KernelSU module is live. Approve this app in Manager, then check root."
                 : rooted() ? "Root verified. Next: load KernelSU."
                 : transportReady() ? "Shell ready. Next: run the exploit."
                 : payloadReady() ? "Payload verified. Next: root access."
                 : feedReady() ? "Update info ready. Next: download."
                 : "One button walks the whole flow: update info, payload, exploit, KernelSU.");
-        markStep(stepFeed, feedReady(), "feed".equals(step),
-                "Update info" + (feedReady() ? " — " + selected.id : ""));
+        markStep(stepFeed, deviceChecked && supportedDevice() && feedReady(),
+                "feed".equals(step) || "device".equals(step) || "unsupported".equals(step),
+                "Update info" + (deviceChecked ? (supportedDevice() ? " — supported" : " — unsupported") : ""));
         markStep(stepPayload, payloadReady(), "download".equals(step),
                 "Payload" + (payloadReady() ? " — verified" : ""));
         markStep(stepRoot, rooted(), "transport".equals(step) || "run".equals(step),
@@ -932,6 +1085,7 @@ public class MainActivity extends Activity {
         }
         updateRootChip();
         String device = Build.MODEL + " • Android " + Build.VERSION.RELEASE + "\n" + Build.DISPLAY;
+        if (deviceChecked) device += "\nCompatibility: " + (supportedDevice() ? "SUPPORTED" : "UNSUPPORTED BUILD");
         if (feedReady()) device += "\nPayload: " + selected.id;
         deviceInfo.setText(device);
     }
@@ -986,7 +1140,9 @@ public class MainActivity extends Activity {
         final String url = preferences.getString("feed_url", FEED);
         flowJob("Loading targets feed…", () -> {
             String feedText = Network.text(url);
-            JSONObject feed = new JSONObject(feedText);
+            JSONObject raw = new JSONObject(feedText);
+            JSONObject feed = raw.has("manifest") && raw.has("signature")
+                    ? SignedManifest.verified(feedText) : raw;
             if (feed.optInt("schemaVersion", 3) != 3) throw new IOException("Only schema-v3 feeds are supported");
             String saved = preferences.getString("selected_payload", "r0s-S901BXXSNGZD7");
             JSONArray entries = feed.getJSONArray("payloads");
@@ -1189,14 +1345,38 @@ public class MainActivity extends Activity {
 
     private void setupKernel(Shell.Transport transport) throws Exception {
         try {
+            requireSupported();
             String helper = null;
             try {
                 transport.run("test -x " + Shell.quote(HELPER_DEVICE_PATH), getCacheDir());
                 helper = HELPER_DEVICE_PATH;
             } catch (Exception ignored) {
             }
-            String result = KernelSetup.load(Build.MODEL, transport, getCacheDir(), helper);
-            adoptKsuSu(result);
+            workflow.enter(RootWorkflowController.Step.LOADING_KSU);
+            KernelSuController.Result load = KernelSetup.loadVerified(Build.MODEL, transport,
+                    getCacheDir(), helper, line -> post(() -> { log(line); runAppend(line); }));
+            workflow.enter(RootWorkflowController.Step.VERIFYING_KSU);
+            if (!load.loaded()) throw new IOException(load.message() + "\n"
+                    + (load.command == null ? "" : load.command.diagnostic()));
+            CommandResult su = new Shell.Su().execute("id -u 2>/dev/null; id", getCacheDir(), 15000);
+            KernelSuController.State state = KernelSuController.authorization(
+                    KernelSuController.Presence.PRESENT, su);
+            ksuLoaded = true;
+            ksuWorking = state == KernelSuController.State.ROOT_GRANTED;
+            if (ksuWorking) rootGranted = true;
+            saveVolatileState();
+            post(() -> {
+                String message = ksuWorking ? "KernelSU root authorization verified"
+                        : "KernelSU loaded successfully. Waiting for KernelSU Manager permission.";
+                status.setText(message);
+                kernelStatus.setText(message);
+                saveStatus(message);
+                log("[KSU] " + message + "\n[SU]\n" + su.diagnostic());
+                if (!ksuWorking) showSheet("KernelSU permission needed",
+                        "KernelSU is loaded successfully, but S22-Updater has not been granted root permission yet.",
+                        "Open KernelSU Manager", this::openManager, "Retry root check", this::checkRoot);
+                updateFlow();
+            });
         } catch (Exception e) {
             String hint = (transport instanceof Shell.ShizukuShell) && !rootGranted
                     ? " Loading needs real root (su) — a Shizuku shell cannot insmod. "
@@ -1281,187 +1461,26 @@ public class MainActivity extends Activity {
         }
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         flowJob("Running exploit via " + transport.name() + "…", () -> {
-            File payloadFile = localFile(p);
-            if (!payloadFile.isFile()) {
-                post(() -> status.setText("Downloading payload first…"));
-                File part = File.createTempFile("download-", ".part", getFilesDir());
-                try {
-                    Network.download(p.url, part, null);
-                    PayloadStore.verify(part, p.size, p.sha);
-                    PayloadStore.replace(part, payloadFile);
-                } finally {
-                    part.delete();
-                }
-            }
-            String hash = PayloadStore.verify(payloadFile, p.size, p.sha);
-            if (transport instanceof Shell.ShizukuShell && !Shell.shizukuGranted()) {
-                post(() -> {
-                    shizukuGranted = false;
-                    shizukuStatus.setText("Shizuku: authorization lost");
-                    showSheet("Shizuku not authorized", "Shizuku permission was revoked "
-                            + "or never granted. Authorize this app in Shizuku, then run "
-                            + "the exploit again.", "Authorize Shizuku", this::checkShizuku,
-                            "Diagnose", this::diagnoseShizuku);
-                });
-                return;
-            }
-            String helperPath = resolveHelper(p, transport);
-            stageExecutable(transport, payloadFile, EXPLOIT_DEVICE_PATH, hash);
-            post(() -> {
-                status.setText("Exploit running — keep the phone idle…");
-                saveStatus("Exploit running — keep the phone idle…");
-                log("Exploit started via " + transport.name() + ". Attempt budget 24, watchdog 15 min. Helper: " + helperPath);
-                runAppend("$ LD_PRELOAD=" + EXPLOIT_DEVICE_PATH + " sh  (attempts=24)");
+            requireSupported();
+            if (ExploitRunner.helperRoot(transport, getCacheDir())) { rediscover(); return; }
+            if (preferences.getBoolean("root_operation_pending", false))
+                throw new IOException("Previous root operation may still be running. Recheck state; reboot before another attempt.");
+            workflow.enter(RootWorkflowController.Step.CHECKING_CACHE);
+            File payload = PayloadCache.obtain(getFilesDir(), p.id, p.url, p.size, p.sha, null);
+            File helper = PayloadCache.obtain(getFilesDir(), p.id + "-helper", p.helperUrl, p.helperSize, p.helperSha, null);
+            workflow.enter(RootWorkflowController.Step.VERIFYING_PAYLOAD);
+            PayloadStore.verify(payload, p.size, p.sha);
+            PayloadStore.verify(helper, p.helperSize, p.helperSha);
+            preferences.edit().putBoolean("root_operation_pending", true).apply();
+            ExploitRunner runner = new ExploitRunner(getCacheDir(), transport, new ExploitRunner.Listener() {
+                public void log(String line) { post(() -> { MainActivity.this.log(line); runAppend(line); }); }
+                public void stage(RootWorkflowController.Step step) { workflow.enter(step); }
             });
-            String env = "EXPLOIT_ATTEMPTS=24 CVE43499_ROOT_HELPER=" + Shell.quote(helperPath);
-            transport.run("rm -f " + Shell.quote(EXPLOIT_LOG_PATH), getCacheDir());
-            transport.run("set -e; " + env + " LD_PRELOAD=" + Shell.quote(EXPLOIT_DEVICE_PATH)
-                    + " /system/bin/sh > " + Shell.quote(EXPLOIT_LOG_PATH)
-                    + " 2>&1 & echo started", getCacheDir());
-            watchExploitLog(transport);
-            final String helper = helperPath;
-            String probe;
-            try {
-                probe = transport.run(Shell.quote(helper) + " -c 'id; getenforce'", getCacheDir());
-            } catch (Exception e) {
-                probe = "";
-            }
-            final boolean rooted = probe.contains("uid=0");
-            final String probeText = probe;
-            post(() -> {
-                if (rooted) {
-                    rootGranted = rootGranted || transport instanceof Shell.Su;
-                    exploitRooted = true;
-                    saveVolatileState();
-                    status.setText("Exploit completed — root verified");
-                    saveStatus("Exploit completed — root verified");
-                    log("Exploit success marker seen; helper reports:\n" + probeText);
-                    runAppend("[exploit completed] " + probeText.replace("\n", " | "));
-                    promptKernelSu(transport, helper);
-                } else {
-                    status.setText("Exploit finished without root");
-                    saveStatus("Exploit finished without root");
-                    log("No success marker/root. Reboot for clean slabs, close apps, "
-                            + "keep the screen unlocked and idle, then run again.");
-                    runAppend("[no root] reboot for clean slabs, then run again");
-                }
-            });
+            String result = runner.run(payload, p.sha, helper, p.helperSha);
+            preferences.edit().putBoolean("root_operation_pending", false).apply();
+            post(() -> log("[ROOT] " + result));
+            rediscover();
         });
-    }
-
-    /** Returns a device path for the root helper, staging it when the feed provides one. */
-    private String resolveHelper(Payload p, Shell.Transport transport) throws Exception {
-        if (p.helperUrl != null && !p.helperUrl.isEmpty()) {
-            File cached = new File(getCacheDir(), "helper-" + p.id);
-            boolean ok = false;
-            try {
-                if (cached.isFile()) PayloadStore.verify(cached, p.helperSize, p.helperSha);
-                else {
-                    File part = File.createTempFile("helper-", ".part", getCacheDir());
-                    try {
-                        Network.download(p.helperUrl, part, null);
-                        PayloadStore.verify(part, p.helperSize, p.helperSha);
-                        PayloadStore.replace(part, cached);
-                    } finally {
-                        part.delete();
-                    }
-                }
-                ok = true;
-            } catch (Exception e) {
-                String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-                post(() -> log("Helper download failed: " + message));
-            }
-            if (ok) {
-                stageExecutable(transport, cached, HELPER_DEVICE_PATH,
-                        PayloadStore.hash(cached));
-                return HELPER_DEVICE_PATH;
-            }
-        }
-        try {
-            transport.run("test -x " + Shell.quote(HELPER_DEVICE_PATH), getCacheDir());
-            return HELPER_DEVICE_PATH;
-        } catch (Exception e) {
-            throw new IOException("No root helper: the feed has no helper artifact and "
-                    + HELPER_DEVICE_PATH + " is missing. Stage it with support/deploy.sh first.");
-        }
-    }
-
-    private void stageExecutable(Shell.Transport transport, File source, String dest, String hash)
-            throws Exception {
-        String temp = dest + ".s22-stage";
-        String qTemp = Shell.quote(temp);
-        if (transport instanceof Shell.Su) {
-            transport.run("set -e; trap 'rm -f " + qTemp + "' EXIT; cp "
-                    + Shell.quote(source.getAbsolutePath()) + " " + qTemp + "; chmod 755 " + qTemp
-                    + "; actual=$(sha256sum " + qTemp + "); [ \"${actual%% *}\" = '" + hash + "' ]; mv -f "
-                    + qTemp + " " + Shell.quote(dest), getCacheDir());
-        } else {
-            transport.writeFile(source, temp, "755");
-            transport.run("set -e; actual=$(sha256sum " + qTemp + "); "
-                    + "[ \"${actual%% *}\" = '" + hash + "' ]; mv -f " + qTemp + " "
-                    + Shell.quote(dest), getCacheDir());
-        }
-    }
-
-    /** Polls the on-device exploit log for the success marker with stall/total watchdogs. */
-    private void watchExploitLog(Shell.Transport transport) throws Exception {
-        final long totalMs = 15 * 60 * 1000;
-        final long stallMs = 120 * 1000;
-        long start = System.currentTimeMillis();
-        long lastProgress = start;
-        String lastTail = "";
-        while (true) {
-            if (Thread.currentThread().isInterrupted()) throw new InterruptedIOException("Cancelled");
-            String tail;
-            try {
-                tail = transport.run("tail -c 4096 " + Shell.quote(EXPLOIT_LOG_PATH) + " 2>/dev/null || true",
-                        getCacheDir());
-            } catch (Exception e) {
-                tail = "";
-            }
-            if (!tail.equals(lastTail)) {
-                lastTail = tail;
-                lastProgress = System.currentTimeMillis();
-                final String snapshot = tail.length() > 1000 ? tail.substring(tail.length() - 1000) : tail;
-                String lastLine = "";
-                for (String line : snapshot.split("\n")) {
-                    String clean = line.replaceAll("\u001B\\[[0-?]*[ -/]*[@-~]", "").trim();
-                    if (!clean.isEmpty()) lastLine = clean;
-                }
-                if (lastLine.length() > 140) lastLine = "…" + lastLine.substring(lastLine.length() - 139);
-                final String live = lastLine;
-                post(() -> {
-                    status.setText(live.isEmpty() ? "Exploit running…" : "Exploit: " + live);
-                    saveStatus(status.getText().toString());
-                    log("exploit: " + snapshot.replace("\n", " | "));
-                    if (!live.isEmpty()) runAppend(live);
-                });
-            }
-            if (tail.contains("exploit completed")) return;
-            long now = System.currentTimeMillis();
-            if (now - lastProgress > stallMs)
-                throw new IOException("Exploit stalled (no log progress for 120s). "
-                        + "Reboot for clean slabs and try again.");
-            if (now - start > totalMs)
-                throw new IOException("Exploit timed out after 15 minutes.");
-            Thread.sleep(2000);
-        }
-    }
-
-    private void promptKernelSu(final Shell.Transport transport, final String helperPath) {
-        post(() -> showSheet("Exploit completed", "Root verified through the exploit helper.\n\n"
-                + "Install KernelSU now?", "Install KernelSU", () ->
-                flowJob("Setting up KernelSU…", () -> {
-                    try {
-                        String result = KernelSetup.load(Build.MODEL, transport,
-                                getCacheDir(), helperPath);
-                        adoptKsuSu(result);
-                    } catch (Exception e) {
-                        post(() -> kernelStatus.setText(
-                                "KernelSU setup failed: " + e.getMessage()));
-                        throw e;
-                    }
-                }), "Later", null));
     }
 
     private void checkAppUpdate() {

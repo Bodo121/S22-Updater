@@ -20,9 +20,20 @@ public final class SmokeTest extends Instrumentation {
         }
         return null;
     }
+    private TextView findContaining(View view, String label) {
+        if (view instanceof TextView && ((TextView) view).getText().toString().contains(label)) return (TextView) view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                TextView result = findContaining(group.getChildAt(i), label);
+                if (result != null) return result;
+            }
+        }
+        return null;
+    }
     private void check(Activity activity) {
         View decor = activity.getWindow().getDecorView();
-        for (String label : new String[]{"Check for updates", "Check root", "Authorize Shizuku", "Open KernelSU Manager", "Refresh changelog", "Save feed URL", "Check for app updates", "Diagnose Shizuku handshake", "Share diagnostics", "System", "Blue", "Green", "Purple", "Orange"}) {
+        for (String label : new String[]{"Run Device Doctor", "Check root", "Authorize Shizuku", "Open KernelSU Manager", "Recheck KernelSU", "Refresh changelog", "Save feed URL", "Check for app updates", "Diagnose Shizuku handshake", "Share diagnostics", "Copy GitHub issue report", "Clear payload cache", "System", "Blue", "Green", "Purple", "Orange"}) {
             TextView button = find(decor, label);
             if (button == null || !button.hasOnClickListeners()) throw new AssertionError("Unwired: " + label);
         }
@@ -30,7 +41,7 @@ public final class SmokeTest extends Instrumentation {
             TextView button = find(decor, label);
             if (button == null || !button.performClick()) throw new AssertionError("Navigation: " + label);
         }
-        if (find(decor, "Root: not checked") == null) throw new AssertionError("Root status missing");
+        if (findContaining(decor, "Root:") == null) throw new AssertionError("Root status missing");
     }
     @Override public void onStart() {
         Bundle result = new Bundle();

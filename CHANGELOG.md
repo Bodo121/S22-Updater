@@ -1,5 +1,39 @@
 # Changelog
 
+## 6.0
+
+### Added
+- v5.0 compatibility baseline document and extracted `ExploitRunner` preserving
+  known-working temporary-root execution behavior.
+- Structured command results for exit code, stdout, stderr, timeout, and
+  exception handling; stdout length is never a success/failure signal.
+- Explicit KernelSU controller with module-loaded, permission-pending,
+  root-granted, load-failed, and verification-failed states.
+- Device Doctor preflight for Samsung SM-S901B / S901BXXSNGZD7 exact-build
+  compatibility, kernel, fingerprint, SELinux, storage, battery, and boot hash.
+- Verified payload cache helper with atomic `.part` downloads, reuse, and Clear
+  payload cache action.
+- Copyable GitHub issue report template and richer diagnostics.
+- Ed25519 signed-manifest verification support, failing closed when no public
+  key is configured; unsigned feed metadata is limited to the pinned v5.0-known
+  target values.
+
+### Changed
+- Root workflow now starts with compatibility checking and self-heals by
+  rediscovering actual KernelSU module state on startup/recheck.
+- KernelSU load flow checks module presence before insmod, never reruns insmod
+  against an already-loaded module, and verifies actual module state after the
+  command including silent successful insmod.
+- KSU module loaded but app su permission missing is reported as
+  WAITING_FOR_MANAGER_PERMISSION, not load failure.
+
+### Tested
+- Host tests cover silent insmod success, missing module after exit 0, real load
+  failure, already-loaded skip, File-exists/already-loaded, permission pending,
+  full root, reboot reset, process restart rediscovery, uid parsing, timeout,
+  unknown probe, delayed module visibility, separate stdout/stderr capture,
+  pipe flood/no deadlock, process timeout, execution exception, and interruption.
+
 ## 5.1
 
 ### Added

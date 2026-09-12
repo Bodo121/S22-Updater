@@ -22,11 +22,14 @@ final class Shell {
     interface Transport {
         String name();
         String run(String command, File scratch) throws Exception;
+        default CommandResult execute(String command, File scratch, long timeout) {
+            return CommandRunner.run(() -> start(new String[]{"/system/bin/sh", "-c", command}, null), null, timeout);
+        }
         void writeFile(File source, String remotePath, String mode) throws Exception;
         Proc start(String[] cmd, String[] env) throws Exception;
     }
 
-    interface Proc {
+    interface Proc extends CommandRunner.ProcessHandle {
         InputStream stdout();
         InputStream stderr();
         OutputStream stdin();
@@ -43,6 +46,9 @@ final class Shell {
     // ---------- su transport ----------
 
     static final class Su implements Transport {
+        @Override public CommandResult execute(String command, File scratch, long timeout) {
+            return CommandRunner.local(new String[]{"su", "-c", command}, scratch, timeout);
+        }
         @Override public String name() {
             return "root";
         }
@@ -105,9 +111,9 @@ final class Shell {
     static boolean outputGrantsRoot(String output) {
         if (output == null) return false;
         for (String line : output.split("\\n")) {
-            if (line.trim().equals("0")) return true;
+            if (line.trim().equals("0") || line.trim().matches("uid=0(?:\\([^)]*\\))?(?:\\s.*)?")) return true;
         }
-        return output.contains("uid=0");
+        return false;
     }
 
     // ---------- Shizuku transport ----------

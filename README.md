@@ -1,4 +1,4 @@
-# S22 Updater 5.1
+# S22 Updater 6.0
 
 A clean control center for the personal IONSTACK-S22 / KernelSU phone project.
 The app keeps the one-button root/update flow and persists progress across app
@@ -11,7 +11,7 @@ Get the current APK, `SHA256SUMS`, and `app-update.json` from
 
 ```sh
 sha256sum -c SHA256SUMS
-adb install -r S22-Updater-v5.1.apk
+adb install -r S22-Updater-v6.0.apk
 ```
 
 Android 9 or later is required.
@@ -41,12 +41,12 @@ persistent signing reference without pushing secrets or private fingerprints.
 
 ## Interface
 
-- **Home:** one context-aware action plus a hero six-step visual stepper: check
-  feed -> download payload -> check root -> run exploit -> load KernelSU -> open
-  Manager. The root/KSU chip stays visible in the header, progress is colored
-  semantically, and failures stay red/contained on the active flow card.
-- **Log:** session diagnostics, changelog refresh, and share/export diagnostics
-  for sending logs directly.
+- **Home:** one context-aware action plus Device Doctor, exact-build status,
+  temporary-root state, KernelSU module state, and KernelSU app authorization
+  state. KernelSU loaded-but-ungranted is shown as permission pending, not a
+  failed install.
+- **Log:** session diagnostics, changelog refresh, share/export diagnostics, and
+  a copyable GitHub issue report template.
 - **Settings:** feed URL, customizable Material-style color palette, Shizuku
   tools, payload export, automatic KernelSU setup option, app updater, and
   install-permission status.
@@ -74,11 +74,24 @@ changes, because a real reboot wipes exploit/KSU state.
 
 ## Root And KernelSU Flow
 
-The app stages the verified IONSTACK payload and helper to `/data/local/tmp`,
-runs the exploit with `EXPLOIT_ATTEMPTS=24`, watches the live exploit log, and
-verifies root through the helper. KernelSU loading is exact-build gated for
-`SM-S901B / S901BXXSNGZD7`; after the module loads, the app immediately probes
-KernelSU `su` (`id -u`, `id`, `/sys/module/kernelsu`) and records root success
-when `su` genuinely grants uid 0.
+The low-level temporary-root path is the known-working v5.0 implementation:
+verified IONSTACK payload/helper staging to `/data/local/tmp`,
+`EXPLOIT_ATTEMPTS=24`, `CVE43499_ROOT_HELPER`, `LD_PRELOAD`, live log polling,
+120-second stall watchdog, 15-minute total watchdog, and helper `uid=0`
+verification are preserved.
+
+KernelSU loading is exact-build gated for `SM-S901B / S901BXXSNGZD7`. `insmod`
+command output is diagnostic only: empty stdout is normal. The app checks module
+presence before loading, skips duplicate `insmod`, runs the v5.0 helper-first
+loader if needed, polls `/sys/module/kernelsu` or `/proc/modules`, then tests
+whether S22-Updater itself has `su` uid 0. Module-loaded and app-authorized are
+separate states.
 
 The exploit is volatile: reboot clears root and the loaded module.
+
+## Signed Manifest Support
+
+`SignedManifest` supports Ed25519 verification of signed compatibility metadata.
+The repository does not contain a private signing key. Until a public key is
+compiled into the app, unsigned feed data is accepted only for the pinned
+v5.0-known `r0s-S901BXXSNGZD7` payload URLs, sizes, and SHA-256 values.
