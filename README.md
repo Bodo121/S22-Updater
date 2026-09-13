@@ -1,4 +1,4 @@
-# S22 Updater 6.0
+# S22 Updater 6.1
 
 A clean control center for the personal IONSTACK-S22 / KernelSU phone project.
 The app keeps the one-button root/update flow and persists progress across app
@@ -11,7 +11,7 @@ Get the current APK, `SHA256SUMS`, and `app-update.json` from
 
 ```sh
 sha256sum -c SHA256SUMS
-adb install -r S22-Updater-v6.0.apk
+adb install -r S22-Updater-v6.1.apk
 ```
 
 Android 9 or later is required.
@@ -64,13 +64,15 @@ Durable state is stored in `SharedPreferences`:
 
 - selected feed payload and cached feed JSON
 - selected tab/page
-- root, Shizuku, exploit, and KernelSU state scoped to the current boot ID
+- root, Shizuku, exploit, Device Doctor, and KernelSU state scoped to the current boot session
 - live run log and session diagnostics
 - last visible status text
 - updater toggles and feed URL
 
-Volatile root state is cleared automatically if `/proc/sys/kernel/random/boot_id`
-changes, because a real reboot wipes exploit/KSU state.
+Volatile root state is cleared automatically when the boot session changes,
+because a real reboot wipes exploit/KSU state. If the kernel boot ID is
+unavailable, the app uses stable same-boot fallbacks and never treats `unknown`
+as proof of the same boot.
 
 ## Root And KernelSU Flow
 

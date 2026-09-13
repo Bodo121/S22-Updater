@@ -15,7 +15,7 @@ final class RootState {
         return temporaryRoot || suGranted ? Status.TEMP_ROOT_ACTIVE : Status.NOT_ROOTED;
     }
     static boolean sameBoot(String stored, String actual) {
-        return actual != null && !actual.isEmpty() && !actual.equals("unknown") && actual.equals(stored);
+        return BootSessionStore.sameBoot(stored, actual);
     }
     static boolean uidZero(String output) {
         if (output == null) return false;

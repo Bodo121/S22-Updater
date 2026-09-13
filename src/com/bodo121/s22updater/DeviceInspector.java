@@ -35,7 +35,7 @@ final class DeviceInspector {
         if (d.firmware.equals("unknown")) d.firmware = Build.DISPLAY;
         d.oneUi = command(cache, "getprop ro.build.version.oneui");
         d.kernel = command(cache, "uname -r"); d.kernelFull = command(cache, "uname -a");
-        d.selinux = command(cache, "getenforce"); d.bootId = readBootId();
+        d.selinux = command(cache, "getenforce"); d.bootId = BootSessionStore.current(context);
         d.freeBytes = context.getFilesDir().getUsableSpace();
         Intent battery = context.registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
         int scale = battery == null ? 0 : battery.getIntExtra(BatteryManager.EXTRA_SCALE, 0);

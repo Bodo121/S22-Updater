@@ -8,8 +8,11 @@ PLATFORM="${PLATFORM:-$HOME/android-sdk/android-34/android.jar}"
 OUT="$HERE/out/tests"
 mkdir -p "$OUT/host" "$OUT/classes" "$OUT/dex"
 javac -d "$OUT/host" "$HERE/src/com/bodo121/s22updater/Network.java" \
-    "$HERE/src/com/bodo121/s22updater/PayloadStore.java" "$HERE/tests/StoreTest.java"
+    "$HERE/src/com/bodo121/s22updater/PayloadStore.java" \
+    "$HERE/src/com/bodo121/s22updater/PayloadCache.java" \
+    "$HERE/tests/StoreTest.java" "$HERE/tests/PayloadCacheTest.java"
 java -cp "$OUT/host" com.bodo121.s22updater.StoreTest
+java -cp "$OUT/host" com.bodo121.s22updater.PayloadCacheTest
 # Functional KSU verdict mapping is mandatory. If this script is run from a
 # clean tree, bootstrap the vendor jars through build.sh instead of silently
 # skipping the verdict test.
@@ -19,12 +22,14 @@ if [ ! -f "$HERE/out/vendor/shizuku/api/classes.jar" ] \
   mkdir -p "$OUT/host" "$OUT/classes" "$OUT/dex"
 fi
 VCP="$PLATFORM:$HERE/out/vendor/shizuku/api/classes.jar:$HERE/out/vendor/shizuku/provider/classes.jar"
-javac -d "$OUT/host" "$HERE/src/com/bodo121/s22updater/CommandResult.java" \
+javac -classpath "$VCP" -d "$OUT/host" "$HERE/src/com/bodo121/s22updater/CommandResult.java" \
     "$HERE/src/com/bodo121/s22updater/CommandRunner.java" \
+    "$HERE/src/com/bodo121/s22updater/BootSessionStore.java" \
     "$HERE/src/com/bodo121/s22updater/RootState.java" \
     "$HERE/src/com/bodo121/s22updater/KernelSuController.java" \
+    "$HERE/src/com/bodo121/s22updater/RootWorkflowController.java" \
     "$HERE/tests/VerdictTest.java" "$HERE/tests/CommandTest.java"
-java -cp "$OUT/host" com.bodo121.s22updater.VerdictTest
+java -cp "$VCP:$OUT/host" com.bodo121.s22updater.VerdictTest
 java -cp "$OUT/host" com.bodo121.s22updater.CommandTest
 javac --release 8 -classpath "$PLATFORM" -d "$OUT/classes" "$HERE/tests/SmokeTest.java"
 shopt -s globstar

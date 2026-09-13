@@ -10,9 +10,9 @@ name: Release Build
 #   SIGN_STORE_PASS          keystore password
 #   SIGN_KEY_PASS            key password
 #   SIGN_ALIAS               key alias
+#   SIGN_EXPECTED_CERT_SHA256 release certificate SHA-256 digest
 # The current v2 key starts a clean signing line; no lineage file is attached.
-# Without secrets the workflow signs with a throwaway debug key and marks the
-# release notes accordingly (that APK cannot update an existing install).
+# Missing signing secrets fail the workflow before publication.
 
 on:
   push:
@@ -106,15 +106,26 @@ jobs:
         shell: bash
         env:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASS: ${{ secrets.SIGN_STORE_PASS }}
+          KEY_PASS: ${{ secrets.SIGN_KEY_PASS }}
+          KEY_ALIAS: ${{ secrets.SIGN_ALIAS }}
+          EXPECTED_CERT: ${{ secrets.SIGN_EXPECTED_CERT_SHA256 }}
         run: |
           set -euo pipefail
-          if [ -n "$KEYSTORE_B64" ]; then
-            echo "$KEYSTORE_B64" | base64 -d > release.keystore
-            echo "SIGN_KEYSTORE=$PWD/release.keystore" >> "$GITHUB_ENV"
-            echo "using repository signing key"
-          else
-            echo "no signing secrets; using a throwaway debug key"
+          for name in KEYSTORE_B64 STORE_PASS KEY_PASS KEY_ALIAS EXPECTED_CERT; do
+            value="${!name}"
+            if [ -z "$value" ]; then
+              echo "missing signing secret $name; refusing to publish production release" >&2
+              exit 1
+            fi
+          done
+          if ! printf '%s' "$EXPECTED_CERT" | grep -Eq '^[A-Fa-f0-9]{64}$'; then
+            echo "SIGN_EXPECTED_CERT_SHA256 must be a 64-character SHA-256 digest" >&2
+            exit 1
           fi
+          echo "$KEYSTORE_B64" | base64 -d > release.keystore
+          echo "SIGN_KEYSTORE=$PWD/release.keystore" >> "$GITHUB_ENV"
+          echo "using repository signing key"
 
       - name: Build APK
         env:
@@ -123,6 +134,7 @@ jobs:
           SIGN_STORE_PASS: ${{ secrets.SIGN_STORE_PASS }}
           SIGN_KEY_PASS: ${{ secrets.SIGN_KEY_PASS }}
           SIGN_ALIAS: ${{ secrets.SIGN_ALIAS }}
+          SIGN_EXPECTED_CERT_SHA256: ${{ secrets.SIGN_EXPECTED_CERT_SHA256 }}
         run: bash build.sh
 
       - name: Host tests
@@ -139,7 +151,6 @@ jobs:
           VERSION_CODE: ${{ steps.release_tag.outputs.version_code }}
           TAG_COMMIT: ${{ steps.release_tag.outputs.tag_commit }}
           PREVIOUS_TAG: ${{ steps.release_tag.outputs.previous_tag }}
-          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -166,13 +177,8 @@ jobs:
             echo "APK: $APK_NAME"
             echo "SHA-256: $SHA"
             echo
-            if [ -z "$KEYSTORE_B64" ]; then
-              echo "> Signed with a throwaway debug key: this APK installs fresh but cannot update an existing install. Add the signing secrets and re-run for an updatable release."
-              echo
-            else
-              echo "> Signed with the v2 release key. Builds on older keys need a one-time uninstall first; the app's updater detects this and guides you."
-              echo
-            fi
+            echo "> Signed with the v2 release key. Builds on older keys need a one-time uninstall first; the app's updater detects this and guides you."
+            echo
             if [ -n "$PREVIOUS_TAG" ]; then
               echo "Changes since $PREVIOUS_TAG:"
               echo

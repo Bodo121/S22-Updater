@@ -19,10 +19,12 @@ import java.io.*;
 import java.text.DateFormat;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class MainActivity extends Activity {
     private static final String FEED = "https://raw.githubusercontent.com/Bodo121/IONSTACK-S22/main/support/targets-v3.json";
     private static final String[] MANAGERS = {"com.rifsxd.ksunext", "me.weishu.kernelsu", "me.tongfei.kerneldebug"};
+    private static final long ROOT_PENDING_STALE_MS = 20L * 60L * 1000L;
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<Button> actions = new ArrayList<>();
@@ -45,11 +47,16 @@ public class MainActivity extends Activity {
     private final RootWorkflowController workflow = new RootWorkflowController();
     private DeviceInspector.Snapshot deviceSnapshot;
     private boolean busy, rootGranted, shizukuGranted, exploitRooted, ksuLoaded, ksuWorking;
+    private boolean payloadVerified;
     private final StringBuilder runLog = new StringBuilder();
+    private final AtomicLong shizukuPollSeq = new AtomicLong();
     private volatile boolean closed;
     private int bg, surface, ink, muted, accent, border, success, danger, warning, pageIndex;
     private boolean restoredProgress;
-    private boolean deviceChecked, advancedMode;
+    private boolean deviceChecked, deviceSupportedCached, advancedMode;
+    private String deviceReportCached = "";
+    private rikka.shizuku.Shizuku.OnBinderReceivedListener shizukuReceivedListener;
+    private rikka.shizuku.Shizuku.OnBinderDeadListener shizukuDeadListener;
     private String failedStep = "";
 
     static final String HELPER_DEVICE_PATH = "/data/local/tmp/cve-2026-43499-root";
@@ -146,7 +153,7 @@ public class MainActivity extends Activity {
         updateManager();
         refreshControls();
         watchShizukuBinder();
-        rediscoverAsync();
+        reconcileStartupAsync();
         if (restoredProgress) log("Progress restored for this boot.");
         else log("Ready. One button walks the whole flow: update info, payload, exploit, KernelSU.");
         if (preferences.getBoolean("auto_app_update", false)) checkAppUpdate();
@@ -194,25 +201,23 @@ public class MainActivity extends Activity {
     }
 
     private String bootId() {
-        try {
-            return Shell.runLocal(new String[]{"/system/bin/sh", "-c",
-                    "cat /proc/sys/kernel/random/boot_id 2>/dev/null || uptime"},
-                    getCacheDir(), 5000).trim();
-        } catch (Exception e) {
-            return "unknown";
-        }
+        return BootSessionStore.current(this);
     }
 
     private boolean sameBoot() {
         String stored = preferences.getString("boot_id", "");
         String current = bootId();
-        if (!stored.equals(current)) {
+        if (!BootSessionStore.sameBoot(stored, current)) {
             preferences.edit()
                     .putString("boot_id", current)
                     .remove("root_granted")
                     .remove("exploit_rooted")
                     .remove("ksu_loaded")
                     .remove("ksu_working")
+                    .remove("workflow_complete")
+                    .remove("root_operation_pending")
+                    .remove("root_operation_boot_id")
+                    .remove("root_operation_started_ms")
                     .remove("shizuku_granted")
                     .apply();
             return false;
@@ -228,6 +233,9 @@ public class MainActivity extends Activity {
         ksuLoaded = boot && preferences.getBoolean("ksu_loaded", false);
         ksuWorking = boot && preferences.getBoolean("ksu_working", false);
         shizukuGranted = boot && preferences.getBoolean("shizuku_granted", false);
+        deviceChecked = boot && preferences.getBoolean("device_checked", false);
+        deviceSupportedCached = boot && preferences.getBoolean("device_supported", false);
+        deviceReportCached = boot ? preferences.getString("device_report", "") : "";
         pageIndex = preferences.getInt("page", 0);
         String savedRunLog = preferences.getString("run_log", "");
         if (!savedRunLog.isEmpty()) runLog.append(savedRunLog);
@@ -236,12 +244,24 @@ public class MainActivity extends Activity {
         if (!feedJson.isEmpty()) {
             try {
                 restorePayloads(new JSONObject(feedJson), savedPayload);
+                payloadVerified = verifiedPayloadMatches(selected);
                 restoredProgress = selected != null;
             } catch (Exception e) {
                 preferences.edit().remove("feed_json").apply();
             }
         }
         restoredProgress |= rootGranted || exploitRooted || ksuLoaded || ksuWorking || runLog.length() > 0;
+        restoredProgress |= deviceChecked || payloadVerified;
+        if (ksuWorking) {
+            rootGranted = true;
+            ksuLoaded = true;
+            statusTextFallback("Root check passed");
+        }
+    }
+
+    private void statusTextFallback(String value) {
+        if (preferences.getString("status_text", "").isEmpty())
+            preferences.edit().putString("status_text", value).apply();
     }
 
     private void applyRestoredState() {
@@ -257,6 +277,7 @@ public class MainActivity extends Activity {
             String all = runLog.toString();
             homeLog.setText(all.length() > 2500 ? "…" + all.substring(all.length() - 2499) : all);
         }
+        if (doctorStatus != null && !deviceReportCached.isEmpty()) doctorStatus.setText(deviceReportCached);
         String session = preferences.getString("activity_log", "");
         if (!session.isEmpty()) activityLog.setText(session);
         updateLogEmpty();
@@ -270,7 +291,70 @@ public class MainActivity extends Activity {
                 .putBoolean("exploit_rooted", exploitRooted)
                 .putBoolean("ksu_loaded", ksuLoaded)
                 .putBoolean("ksu_working", ksuWorking)
+                .putBoolean("workflow_complete", ksuWorking)
                 .putBoolean("shizuku_granted", shizukuGranted)
+                .apply();
+    }
+
+    private void saveDeviceSnapshot(DeviceInspector.Snapshot snap) {
+        deviceSnapshot = snap;
+        deviceChecked = true;
+        deviceSupportedCached = snap.supported();
+        deviceReportCached = snap.report();
+        preferences.edit()
+                .putBoolean("device_checked", true)
+                .putBoolean("device_supported", deviceSupportedCached)
+                .putString("device_report", deviceReportCached)
+                .apply();
+    }
+
+    private void savePayloadVerified(Payload payload, boolean verified) {
+        payloadVerified = verified;
+        SharedPreferences.Editor edit = preferences.edit();
+        if (verified && payload != null) edit.putBoolean("payload_verified", true)
+                .putString("payload_verified_id", payload.id)
+                .putString("payload_verified_sha", payload.sha)
+                .putLong("payload_verified_size", payload.size);
+        else edit.remove("payload_verified").remove("payload_verified_id")
+                .remove("payload_verified_sha").remove("payload_verified_size");
+        edit.apply();
+    }
+
+    private boolean verifiedPayloadMatches(Payload payload) {
+        return payload != null && preferences.getBoolean("payload_verified", false)
+                && payload.id.equals(preferences.getString("payload_verified_id", ""))
+                && payload.sha.equals(preferences.getString("payload_verified_sha", ""))
+                && payload.size == preferences.getLong("payload_verified_size", -1L);
+    }
+
+    private boolean rootOperationPendingActive() {
+        if (!preferences.getBoolean("root_operation_pending", false)) return false;
+        if (!BootSessionStore.sameBoot(preferences.getString("root_operation_boot_id", ""), bootId())) {
+            clearRootOperationPending();
+            return false;
+        }
+        long started = preferences.getLong("root_operation_started_ms", 0L);
+        if (started <= 0L || System.currentTimeMillis() - started > ROOT_PENDING_STALE_MS) {
+            clearRootOperationPending();
+            post(() -> log("Recovered stale root-operation lock."));
+            return false;
+        }
+        return true;
+    }
+
+    private void markRootOperationPending() {
+        preferences.edit()
+                .putBoolean("root_operation_pending", true)
+                .putString("root_operation_boot_id", bootId())
+                .putLong("root_operation_started_ms", System.currentTimeMillis())
+                .apply();
+    }
+
+    private void clearRootOperationPending() {
+        preferences.edit()
+                .remove("root_operation_pending")
+                .remove("root_operation_boot_id")
+                .remove("root_operation_started_ms")
                 .apply();
     }
 
@@ -303,31 +387,35 @@ public class MainActivity extends Activity {
     private void watchShizukuBinder() {
         Shell.requestShizukuBinder(this);
         try {
-            rikka.shizuku.Shizuku.addBinderReceivedListenerSticky(
-                    new rikka.shizuku.Shizuku.OnBinderReceivedListener() {
-                        @Override public void onBinderReceived() {
-                            post(() -> {
-                                log("Shizuku binder received");
-                                pollShizuku();
-                                if (preferences.getBoolean("shizuku_wanted", false)
-                                        && !shizukuGranted) {
-                                    checkShizuku();
-                                }
-                            });
-                        }
-                    });
-            rikka.shizuku.Shizuku.addBinderDeadListener(
-                    new rikka.shizuku.Shizuku.OnBinderDeadListener() {
-                        @Override public void onBinderDead() {
-                            post(() -> {
-                                shizukuGranted = false;
-                                saveVolatileState();
-                                shizukuStatus.setText("Shizuku: binder died");
-                                log("Shizuku binder died — restart Shizuku if needed");
-                                updateFlow();
-                            });
-                        }
-                    });
+            if (shizukuReceivedListener == null) {
+                shizukuReceivedListener = new rikka.shizuku.Shizuku.OnBinderReceivedListener() {
+                    @Override public void onBinderReceived() {
+                        post(() -> {
+                            log("Shizuku binder received");
+                            pollShizuku();
+                            if (preferences.getBoolean("shizuku_wanted", false)
+                                    && !shizukuGranted) {
+                                checkShizuku();
+                            }
+                        });
+                    }
+                };
+                rikka.shizuku.Shizuku.addBinderReceivedListenerSticky(shizukuReceivedListener);
+            }
+            if (shizukuDeadListener == null) {
+                shizukuDeadListener = new rikka.shizuku.Shizuku.OnBinderDeadListener() {
+                    @Override public void onBinderDead() {
+                        post(() -> {
+                            shizukuGranted = false;
+                            saveVolatileState();
+                            shizukuStatus.setText("Shizuku: binder died");
+                            log("Shizuku binder died — restart Shizuku if needed");
+                            updateFlow();
+                        });
+                    }
+                };
+                rikka.shizuku.Shizuku.addBinderDeadListener(shizukuDeadListener);
+            }
         } catch (Throwable ignored) {
         }
         pollShizuku();
@@ -439,11 +527,13 @@ public class MainActivity extends Activity {
 
     /** Passive presence check: never requests permission, safe on every resume. */
     private void pollShizuku() {
+        final long seq = shizukuPollSeq.incrementAndGet();
         new Thread(new Runnable() {
             @Override public void run() {
                 final boolean running = Shell.awaitShizukuRunning(MainActivity.this, 1000);
                 final boolean granted = running && Shell.shizukuGranted();
                 post(() -> {
+                    if (seq != shizukuPollSeq.get()) return;
                     shizukuGranted = granted;
                     saveVolatileState();
                     if (granted) shizukuStatus.setText("Shizuku: authorized");
@@ -631,7 +721,10 @@ public class MainActivity extends Activity {
     private void resetFeed() {
         selected = null;
         payloads.clear();
-        preferences.edit().remove("feed_json").remove("selected_payload").apply();
+        payloadVerified = false;
+        preferences.edit().remove("feed_json").remove("selected_payload")
+                .remove("payload_verified").remove("payload_verified_id")
+                .remove("payload_verified_sha").remove("payload_verified_size").apply();
         status.setText("Feed changed — check for updates");
         saveStatus("Feed changed — check for updates");
         refreshControls();
@@ -857,8 +950,7 @@ public class MainActivity extends Activity {
         flowJob("Checking device compatibility…", () -> {
             workflow.enter(RootWorkflowController.Step.CHECKING_DEVICE);
             DeviceInspector.Snapshot snap = DeviceInspector.inspect(MainActivity.this);
-            deviceSnapshot = snap;
-            deviceChecked = true;
+            saveDeviceSnapshot(snap);
             workflow.enter(RootWorkflowController.Step.CHECKING_COMPATIBILITY);
             workflow.finish(!snap.supported());
             rediscover();
@@ -875,24 +967,42 @@ public class MainActivity extends Activity {
 
     private void requireSupported() throws IOException {
         if (!deviceChecked || deviceSnapshot == null) {
-            deviceSnapshot = DeviceInspector.inspect(this);
-            deviceChecked = true;
+            saveDeviceSnapshot(DeviceInspector.inspect(this));
         }
         Compatibility.require(deviceSnapshot);
     }
 
     private void rediscoverAsync() {
         if (busy || closed) return;
-        job("Rechecking device state…", () -> {
+        job("Rechecking KernelSU…", () -> {
             if (deviceSnapshot == null) {
-                deviceSnapshot = DeviceInspector.inspect(MainActivity.this);
-                deviceChecked = true;
+                saveDeviceSnapshot(DeviceInspector.inspect(MainActivity.this));
             }
-            rediscover();
+            rediscover(false);
+        });
+    }
+
+    private void reconcileStartupAsync() {
+        worker.execute(() -> {
+            try {
+                if (deviceSnapshot == null) {
+                    saveDeviceSnapshot(DeviceInspector.inspect(MainActivity.this));
+                }
+                rediscover(true);
+            } catch (Exception ignored) {
+            }
         });
     }
 
     private void rediscover() throws Exception {
+        rediscover(false);
+    }
+
+    private void rediscover(boolean silent) throws Exception {
+        boolean hadRoot = rootGranted;
+        boolean hadExploit = exploitRooted;
+        boolean hadKsuLoaded = ksuLoaded;
+        boolean hadKsuWorking = ksuWorking;
         KernelSuController.Presence module = KernelSetup.presence(null, getCacheDir());
         boolean moduleLoaded = module == KernelSuController.Presence.PRESENT;
         CommandResult su = CommandRunner.local(new String[]{"su", "-c",
@@ -905,11 +1015,18 @@ public class MainActivity extends Activity {
             try { helperRoot = ExploitRunner.helperRoot(new Shell.Su(), getCacheDir()); }
             catch (Exception ignored) { }
         }
-        rootGranted = suRoot;
-        exploitRooted = helperRoot || (exploitRooted && sameBoot());
-        ksuLoaded = moduleLoaded || suShowsKsu;
-        ksuWorking = ksuLoaded && suRoot;
-        if (!ksuLoaded) ksuWorking = false;
+        if (suRoot || hadRoot) rootGranted = true;
+        exploitRooted = helperRoot || (hadExploit && sameBoot());
+        ksuLoaded = moduleLoaded || suShowsKsu || hadKsuLoaded;
+        ksuWorking = (ksuLoaded && suRoot) || hadKsuWorking;
+        if (module == KernelSuController.Presence.ABSENT && !suShowsKsu) {
+            ksuLoaded = false;
+            ksuWorking = false;
+        }
+        if (ksuWorking) {
+            rootGranted = true;
+            ksuLoaded = true;
+        }
         saveVolatileState();
         post(() -> {
             rootStatus.setText(ksuWorking ? "Root: granted (KernelSU su)"
@@ -920,7 +1037,7 @@ public class MainActivity extends Activity {
                     : "Kernel module: not loaded");
             if (doctorStatus != null && deviceSnapshot != null)
                 doctorStatus.setText(deviceSnapshot.report() + "\n\n" + stateReport());
-            log("[FLOW] State rediscovered\n" + stateReport() + "\n[SU]\n" + su.diagnostic());
+            if (!silent) log("[FLOW] State rediscovered\n" + stateReport() + "\n[SU]\n" + su.diagnostic());
             updateManager();
             updateFlow();
         });
@@ -949,15 +1066,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean payloadReady() {
-        if (!feedReady()) return false;
-        try {
-            File file = localFile(selected);
-            if (!file.isFile()) return false;
-            String hash = PayloadStore.hash(file);
-            return selected.sha.isEmpty() || hash.equalsIgnoreCase(selected.sha);
-        } catch (Exception ignored) {
-            return false;
-        }
+        return feedReady() && payloadVerified;
     }
 
     private boolean transportReady() {
@@ -969,7 +1078,8 @@ public class MainActivity extends Activity {
     }
 
     private boolean supportedDevice() {
-        return deviceSnapshot != null && deviceSnapshot.supported();
+        return deviceSnapshot != null ? deviceSnapshot.supported()
+                : deviceChecked && deviceSupportedCached;
     }
 
     /** One step at a time: feed → download → transport → run → ksu → done. */
@@ -1156,6 +1266,8 @@ public class MainActivity extends Activity {
             final Payload chosen = selected;
             final int count = payloads.size();
             post(() -> {
+                if (!verifiedPayloadMatches(chosen))
+                    savePayloadVerified(chosen, false);
                 preferences.edit()
                         .putString("selected_payload", chosen.id)
                         .putString("feed_json", feed.toString())
@@ -1194,6 +1306,7 @@ public class MainActivity extends Activity {
                 PayloadStore.verify(part, p.size, p.sha);
                 PayloadStore.replace(part, target);
                 String detail = describeLocal(p);
+                savePayloadVerified(p, true);
                 post(() -> {
                     status.setText("Download saved and verified");
                     saveStatus("Download saved and verified");
@@ -1217,16 +1330,16 @@ public class MainActivity extends Activity {
             final boolean ok = granted;
             final String detail = result;
             post(() -> {
-                rootGranted = ok;
+                rootGranted = rootGranted || ok;
                 if (ok && ksuSeen) {
                     ksuLoaded = true;
                     ksuWorking = true;
-                } else {
-                    ksuWorking = false;
                 }
                 saveVolatileState();
-                rootStatus.setText(ok ? "Root: granted" : "Root: not granted");
-                status.setText(ok ? "Root check passed" : "Root access not granted"
+                rootStatus.setText(rooted() ? (ksuWorking ? "Root: granted (KernelSU su)" : "Root: granted")
+                        : "Root: not granted");
+                status.setText(ok ? "Root check passed" : rooted() ? "Root state preserved for this boot"
+                        : "Root access not granted"
                         + (isPackageInstalled("moe.shizuku.manager") && !shizukuGranted
                         ? " — no su? Tap Authorize Shizuku below." : ""));
                 saveStatus(status.getText().toString());
@@ -1396,7 +1509,7 @@ public class MainActivity extends Activity {
         } catch (Exception ignored) {
         }
         if (suNow) rootGranted = true;
-        ksuWorking = suNow;
+        ksuWorking = ksuWorking || suNow;
         saveVolatileState();
         final boolean suReady = suNow;
         post(() -> {
@@ -1463,7 +1576,7 @@ public class MainActivity extends Activity {
         flowJob("Running exploit via " + transport.name() + "…", () -> {
             requireSupported();
             if (ExploitRunner.helperRoot(transport, getCacheDir())) { rediscover(); return; }
-            if (preferences.getBoolean("root_operation_pending", false))
+            if (rootOperationPendingActive())
                 throw new IOException("Previous root operation may still be running. Recheck state; reboot before another attempt.");
             workflow.enter(RootWorkflowController.Step.CHECKING_CACHE);
             File payload = PayloadCache.obtain(getFilesDir(), p.id, p.url, p.size, p.sha, null);
@@ -1471,13 +1584,20 @@ public class MainActivity extends Activity {
             workflow.enter(RootWorkflowController.Step.VERIFYING_PAYLOAD);
             PayloadStore.verify(payload, p.size, p.sha);
             PayloadStore.verify(helper, p.helperSize, p.helperSha);
-            preferences.edit().putBoolean("root_operation_pending", true).apply();
-            ExploitRunner runner = new ExploitRunner(getCacheDir(), transport, new ExploitRunner.Listener() {
-                public void log(String line) { post(() -> { MainActivity.this.log(line); runAppend(line); }); }
-                public void stage(RootWorkflowController.Step step) { workflow.enter(step); }
-            });
-            String result = runner.run(payload, p.sha, helper, p.helperSha);
-            preferences.edit().putBoolean("root_operation_pending", false).apply();
+            savePayloadVerified(p, true);
+            markRootOperationPending();
+            String result;
+            try {
+                ExploitRunner runner = new ExploitRunner(getCacheDir(), transport, new ExploitRunner.Listener() {
+                    public void log(String line) { post(() -> { MainActivity.this.log(line); runAppend(line); }); }
+                    public void stage(RootWorkflowController.Step step) { workflow.enter(step); }
+                });
+                result = runner.run(payload, p.sha, helper, p.helperSha);
+                clearRootOperationPending();
+            } catch (Exception e) {
+                throw new IOException(e.getMessage()
+                        + "\n\nA root operation lock is kept for up to 20 minutes to avoid duplicate exploit processes.", e);
+            }
             post(() -> log("[ROOT] " + result));
             rediscover();
         });
@@ -1781,6 +1901,14 @@ public class MainActivity extends Activity {
         if (exportFile != null) state.putString("export_file", exportFile.getName());
     }
     @Override protected void onDestroy() {
-        closed = true; ui.removeCallbacksAndMessages(null); worker.shutdownNow(); super.onDestroy();
+        closed = true;
+        try {
+            if (shizukuReceivedListener != null)
+                rikka.shizuku.Shizuku.removeBinderReceivedListener(shizukuReceivedListener);
+            if (shizukuDeadListener != null)
+                rikka.shizuku.Shizuku.removeBinderDeadListener(shizukuDeadListener);
+        } catch (Throwable ignored) {
+        }
+        ui.removeCallbacksAndMessages(null); worker.shutdownNow(); super.onDestroy();
     }
 }

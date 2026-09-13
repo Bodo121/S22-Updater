@@ -8,8 +8,15 @@ final class PayloadCache {
             throws Exception {
         File target = PayloadStore.file(dir, id);
         if (target.isFile()) {
-            PayloadStore.verify(target, size, sha);
-            return target;
+            try {
+                PayloadStore.verify(target, size, sha);
+                return target;
+            } catch (Exception e) {
+                File bad = new File(dir, target.getName() + ".bad");
+                if (bad.exists()) bad.delete();
+                if (!target.renameTo(bad) && !target.delete())
+                    throw new IOException("Cached payload is invalid and could not be quarantined", e);
+            }
         }
         File part = new File(dir, target.getName() + ".part");
         try {

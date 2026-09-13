@@ -25,8 +25,19 @@ public final class VerdictTest {
         check(authorization(Presence.PRESENT, cmd(1, "", "denied")) == State.WAITING_FOR_MANAGER_PERMISSION, "testPermissionPending");
         check(authorization(Presence.PRESENT, cmd(0, "0\n", "")) == State.ROOT_GRANTED, "testFullRoot");
         check(!RootState.sameBoot("boot1", "boot2") && !RootState.sameBoot("unknown", "unknown"), "testBootReset");
+        check(BootSessionStore.sameBoot("boot_id:abc", "boot_id:abc")
+                && !BootSessionStore.sameBoot("unknown", "unknown"), "testSameBootTokenGuard");
+        check(BootSessionStore.validBootId("12345678-1234-4abc-9abc-1234567890ab")
+                && !BootSessionStore.validBootId("12345678")
+                && !BootSessionStore.validBootId("unknown"), "testBootIdValidation");
+        check(BootSessionStore.bootEpochBucketForTest(1_000_000L, 100_000L)
+                .equals(BootSessionStore.bootEpochBucketForTest(1_120_000L, 220_000L)),
+                "testStableUptimeFallbackBucket");
         RootState restored = new RootState("boot1", false, Presence.PRESENT, false);
         check(restored.module == Presence.PRESENT && RootState.sameBoot("boot1", restored.bootId), "testRestartRediscovery");
+        check(RootWorkflowController.next(true, true, true, true, true,
+                new RootState("boot1", false, Presence.PRESENT, false))
+                == RootWorkflowController.Action.OPEN_MANAGER, "testKsuLoadedCompletesKernelStep");
         check(!RootState.uidZero("error uid=0 requested") && !RootState.uidZero("uid=01")
                 && RootState.uidZero("uid=0(root) gid=0(root)"), "testUidParsing");
         check(evaluate(new CommandResult(-1, "", "", true, null), Presence.ABSENT).state == State.LOAD_FAILED, "testTimeout");
