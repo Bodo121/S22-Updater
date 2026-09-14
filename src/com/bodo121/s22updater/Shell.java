@@ -67,6 +67,35 @@ final class Shell {
         }
     }
 
+    static final class HelperRoot implements Transport {
+        private final String helper;
+
+        HelperRoot(String helper) {
+            this.helper = helper;
+        }
+
+        @Override public String name() {
+            return "exploit helper";
+        }
+
+        @Override public String run(String command, File scratch) throws Exception {
+            return runLocal(new String[]{helper, "-c", command}, scratch, 30000);
+        }
+
+        @Override public CommandResult execute(String command, File scratch, long timeout) {
+            return CommandRunner.local(new String[]{helper, "-c", command}, scratch, timeout);
+        }
+
+        @Override public void writeFile(File source, String remotePath, String mode) throws Exception {
+            run("cat " + quote(source.getAbsolutePath()) + " > " + quote(remotePath)
+                    + " && chmod " + mode + " " + quote(remotePath), source.getParentFile());
+        }
+
+        @Override public Proc start(String[] cmd, String[] env) {
+            throw new UnsupportedOperationException("direct exec is unavailable through exploit helper");
+        }
+    }
+
     static String runLocal(String[] command, File scratch, long timeoutMs) throws Exception {
         File output = File.createTempFile("cmd-", ".log", scratch);
         Process process = null;

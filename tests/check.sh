@@ -28,9 +28,12 @@ javac -classpath "$VCP" -d "$OUT/host" "$HERE/src/com/bodo121/s22updater/Command
     "$HERE/src/com/bodo121/s22updater/RootState.java" \
     "$HERE/src/com/bodo121/s22updater/KernelSuController.java" \
     "$HERE/src/com/bodo121/s22updater/RootWorkflowController.java" \
-    "$HERE/tests/VerdictTest.java" "$HERE/tests/CommandTest.java"
+    "$HERE/src/com/bodo121/s22updater/ExploitCompletion.java" \
+    "$HERE/tests/VerdictTest.java" "$HERE/tests/CommandTest.java" \
+    "$HERE/tests/ExploitCompletionTest.java"
 java -cp "$VCP:$OUT/host" com.bodo121.s22updater.VerdictTest
 java -cp "$OUT/host" com.bodo121.s22updater.CommandTest
+java -cp "$OUT/host" com.bodo121.s22updater.ExploitCompletionTest
 javac --release 8 -classpath "$PLATFORM" -d "$OUT/classes" "$HERE/tests/SmokeTest.java"
 shopt -s globstar
 classes=("$OUT"/classes/**/*.class)

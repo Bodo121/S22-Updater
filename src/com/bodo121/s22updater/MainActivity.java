@@ -1088,6 +1088,7 @@ public class MainActivity extends Activity {
         if (!supportedDevice()) return "unsupported";
         if (!feedReady()) return "feed";
         if (!payloadReady()) return "download";
+        if (exploitRooted && !ksuWorking) return "ksu";
         if (!transportReady()) return "transport";
         if (!rooted()) return "run";
         if (!ksuWorking) return "ksu";
@@ -1108,12 +1109,12 @@ public class MainActivity extends Activity {
                     openManager();
                     break;
                 }
-                final Shell.Transport transport = pickTransport();
+                final Shell.Transport transport = pickKernelTransport();
                 if (transport == null) {
                     status.setText("No privileged shell for KernelSU setup");
-                    log("KernelSU setup needs root or an authorized Shizuku shell.");
-                    showSheet("No privileged shell", "Load KernelSU needs root or an "
-                            + "authorized Shizuku shell.", "Authorize Shizuku",
+                    log("KernelSU setup needs the exploit helper, root, or an authorized Shizuku shell.");
+                    showSheet("No privileged shell", "Load KernelSU needs the exploit helper, root, "
+                            + "or an authorized Shizuku shell.", "Authorize Shizuku",
                             this::checkShizuku, "Close", null);
                     return;
                 }
@@ -1155,7 +1156,7 @@ public class MainActivity extends Activity {
             case "download": flowAction.setText("Download payload"); break;
             case "transport": flowAction.setText("Check root access"); break;
             case "run": flowAction.setText("Run exploit"); break;
-            case "ksu": flowAction.setText(ksuLoaded ? "Open KernelSU Manager" : "Load KernelSU"); break;
+            case "ksu": flowAction.setText(ksuLoaded ? "Open KernelSU Manager" : "LOAD KERNELSU"); break;
             case "done": flowAction.setText("Open KernelSU Manager"); break;
             default: flowAction.setText("Working…"); break;
         }
@@ -1164,6 +1165,7 @@ public class MainActivity extends Activity {
                 : !supportedDevice() ? "Unsupported build. This app will not run the root workflow here."
                 : ksuWorking ? "KernelSU is active for this boot."
                 : ksuLoaded ? "KernelSU module is live. Approve this app in Manager, then check root."
+                : exploitRooted ? "Exploit completed successfully. Next: load KernelSU."
                 : rooted() ? "Root verified. Next: load KernelSU."
                 : transportReady() ? "Shell ready. Next: run the exploit."
                 : payloadReady() ? "Payload verified. Next: root access."
@@ -1175,12 +1177,12 @@ public class MainActivity extends Activity {
         markStep(stepPayload, payloadReady(), "download".equals(step),
                 "Payload" + (payloadReady() ? " — verified" : ""));
         markStep(stepRoot, rooted(), "transport".equals(step) || "run".equals(step),
-                "Root access" + (rooted() ? " — granted" : ""));
+                "Root access" + (exploitRooted ? " — exploit complete" : rooted() ? " — granted" : ""));
         markStep(stepKsu, ksuWorking, "ksu".equals(step),
                 "KernelSU" + (ksuWorking ? " — working" : ksuLoaded ? " — waiting for su" : ""));
         if (flowStepper != null) {
             boolean manager = managerInstalled();
-            flowStepper.setState(feedReady(), payloadReady(), transportReady(), rooted(),
+            flowStepper.setState(feedReady(), payloadReady(), transportReady() || exploitRooted, rooted(),
                     ksuWorking, manager && ksuWorking, stepIndex(stateStep),
                     failedStep.isEmpty() ? -1 : stepIndex(failedStep));
             if (busy) flowStepper.pulse();
@@ -1447,6 +1449,16 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    private Shell.Transport pickKernelTransport() {
+        if (rootGranted) return new Shell.Su();
+        if (shizukuGranted) {
+            moe.shizuku.server.IShizukuService service = Shell.shizukuService();
+            if (service != null) return new Shell.ShizukuShell(service);
+        }
+        if (exploitRooted && sameBoot()) return new Shell.HelperRoot(ExploitRunner.HELPER);
+        return null;
+    }
+
     private boolean isPackageInstalled(String id) {
         try {
             getPackageManager().getPackageInfo(id, 0);
@@ -1465,6 +1477,7 @@ public class MainActivity extends Activity {
                 helper = HELPER_DEVICE_PATH;
             } catch (Exception ignored) {
             }
+            if (transport instanceof Shell.HelperRoot) helper = null;
             workflow.enter(RootWorkflowController.Step.LOADING_KSU);
             KernelSuController.Result load = KernelSetup.loadVerified(Build.MODEL, transport,
                     getCacheDir(), helper, line -> post(() -> { log(line); runAppend(line); }));
@@ -1491,7 +1504,7 @@ public class MainActivity extends Activity {
                 updateFlow();
             });
         } catch (Exception e) {
-            String hint = (transport instanceof Shell.ShizukuShell) && !rootGranted
+            String hint = (transport instanceof Shell.ShizukuShell) && !rootGranted && !exploitRooted
                     ? " Loading needs real root (su) — a Shizuku shell cannot insmod. "
                       + "Grant root first, then retry."
                     : "";
@@ -1575,7 +1588,11 @@ public class MainActivity extends Activity {
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         flowJob("Running exploit via " + transport.name() + "…", () -> {
             requireSupported();
-            if (ExploitRunner.helperRoot(transport, getCacheDir())) { rediscover(); return; }
+            if (ExploitRunner.helperRoot(transport, getCacheDir())) {
+                clearRootOperationPending();
+                postExploitComplete(null, "Existing temporary helper root verified.");
+                return;
+            }
             if (rootOperationPendingActive())
                 throw new IOException("Previous root operation may still be running. Recheck state; reboot before another attempt.");
             workflow.enter(RootWorkflowController.Step.CHECKING_CACHE);
@@ -1595,11 +1612,66 @@ public class MainActivity extends Activity {
                 result = runner.run(payload, p.sha, helper, p.helperSha);
                 clearRootOperationPending();
             } catch (Exception e) {
+                String logTail = readExploitLog(transport);
+                String marker = ExploitCompletion.markerLine(logTail);
+                if (marker != null) {
+                    clearRootOperationPending();
+                    postExploitComplete(marker, "Helper root will be used to load KernelSU. Verification detail: "
+                            + e.getMessage());
+                    return;
+                }
                 throw new IOException(e.getMessage()
                         + "\n\nA root operation lock is kept for up to 20 minutes to avoid duplicate exploit processes.", e);
             }
-            post(() -> log("[ROOT] " + result));
-            rediscover();
+            String marker = ExploitCompletion.markerLine(readExploitLog(transport));
+            if (marker == null && !RootState.uidZero(result))
+                throw new IOException("Exploit runner returned without the exact completion marker: "
+                        + ExploitCompletion.MARKER);
+            postExploitComplete(marker, result);
+        });
+    }
+
+    private String readExploitLog(Shell.Transport transport) {
+        try {
+            return transport.run("tail -c 16384 " + Shell.quote(ExploitRunner.LOG)
+                    + " 2>/dev/null || true", getCacheDir());
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
+    private void postExploitComplete(final String marker, final String detail) {
+        workflow.enter(RootWorkflowController.Step.VERIFYING_TEMP_ROOT);
+        workflow.finish(false);
+        exploitRooted = true;
+        if (ksuWorking) rootGranted = true;
+        failedStep = "";
+        saveVolatileState();
+        post(() -> {
+            status.setText("Exploit completed successfully");
+            rootStatus.setText("Root: temporary helper active");
+            kernelStatus.setText("Kernel module: ready to load");
+            saveStatus("Exploit completed successfully");
+            if (marker != null) runAppend("[marker] " + marker);
+            log("[ROOT] Exploit completed successfully"
+                    + (marker == null ? "" : "\nMarker: " + marker)
+                    + (detail == null || detail.isEmpty() ? "" : "\n" + detail));
+            showSheet("Exploit completed successfully",
+                    "The exact v5.0 completion marker was confirmed"
+                            + (marker == null ? " by helper-root verification." : ":\n" + marker)
+                            + "\n\nKernelSU can now be loaded through the temporary exploit helper.",
+                    "LOAD KERNELSU", () -> {
+                        Shell.Transport ksuTransport = pickKernelTransport();
+                        if (ksuTransport == null) {
+                            showSheet("No helper available", "The exploit was marked complete, but the helper "
+                                    + "transport is not available in this app session. Re-run the exploit or reboot.",
+                                    "OK", null, null, null);
+                            return;
+                        }
+                        flowJob("Setting up KernelSU…", () -> setupKernel(ksuTransport));
+                    }, "Later", null);
+            updateManager();
+            updateFlow();
         });
     }
 
