@@ -23,6 +23,12 @@ android {
     sourceSets.main {
         java.srcDirs += ['../../src']
         res.srcDirs += ['../../res']
+        // moe/shizuku/server/* is hand-vendored under ../../src for the legacy
+        // no-Gradle build (build.sh), whose Shizuku jars lack those stubs. The
+        // Maven Shizuku artifacts used here already provide the same classes via
+        // the transitive aidl artifact, so exclude the vendored copies to avoid
+        // duplicate dex definitions. Legacy build.sh is unaffected.
+        java.exclude('moe/**')
     }
     signingConfigs {
         release {
