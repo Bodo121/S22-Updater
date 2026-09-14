@@ -1,6 +1,6 @@
 import React, {createContext, useContext, useEffect, useRef, useState} from 'react';
 import {ActivityIndicator, Alert, Animated, AppState, BackHandler, Easing, Modal, Pressable,
-  ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, useColorScheme,
+  ScrollView, StatusBar, StyleSheet, Text, TextInput, useColorScheme,
   useWindowDimensions, View} from 'react-native';
 import Svg, {Defs, Ellipse, Path, RadialGradient, Stop} from 'react-native-svg';
 import {Action, native, NativeState, useNativeState} from './native';
@@ -12,6 +12,25 @@ type Tab = 'home' | 'log' | 'settings';
 type Run = (name: Action, value?: string) => void;
 const STAGES = ['Check feed', 'Download', 'Root', 'Exploit', 'KernelSU', 'Manager'];
 
+/** Readable fallback instead of an instant crash on a render error. */
+class ScreenErrorBoundary extends React.Component<{label: string; children: React.ReactNode}, {error: Error | null}> {
+  state: {error: Error | null} = {error: null};
+  static getDerivedStateFromError(error: Error) {
+    return {error};
+  }
+  componentDidCatch(error: Error) {
+    console.error('[S22] render failed (' + this.props.label + '): ' + (error && error.message ? error.message : 'unknown'));
+  }
+  render() {
+    if (this.state.error) {
+      return <Card title="Something went wrong"><View style={styles.padded}>
+        <Body>{'This section (' + this.props.label + ') failed to render. Root state is safe; switch tabs to continue.'}</Body>
+        <Button label="Retry" onPress={() => this.setState({error: null})} />
+      </View></Card>;
+    }
+    return this.props.children;
+  }
+}
 function Label({children}: {children: React.ReactNode}) {
   const t = useTheme();
   return <Text style={[styles.label, {color: t.mutedFg}]}>{children}</Text>;
@@ -143,15 +162,30 @@ function LogTab({state: s, run}: {state: NativeState; run: Run}) {
       <Button disabled={s.busy} label="Refresh Changelog" onPress={() => run('changelog')} /></View></Card>
   </View>;
 }
+// Pressable toggle matching the provided web design's custom Toggle.
+// Deliberately NOT react-native's Switch: Switch+trackColor NPE-crashes on this
+// app's platform theme (ReactSwitch.setTrackColor dereferences a null drawable).
+function Toggle({label, value, onChange, disabled}: {label: string; value: boolean; onChange: (value: boolean) => void; disabled: boolean}) {
+  const t = useTheme();
+  return <Pressable accessibilityRole="switch" accessibilityState={{checked: value, disabled}} accessibilityLabel={label}
+    disabled={disabled} onPress={() => onChange(!value)}
+    style={[styles.toggle, {backgroundColor: value ? t.primary : t.secondary, opacity: disabled ? .4 : 1}]}>
+    <View style={[styles.knob, {left: value ? 20 : 4}]} />
+  </Pressable>;
+}
 function ToggleRow({label, value, onChange, disabled}: {label: string; value: boolean; onChange: (value: boolean) => void; disabled: boolean}) {
   const t = useTheme();
   return <View style={styles.contextRow}><Text style={[styles.body, {color: t.foreground, flex: 1}]}>{label}</Text>
-    <Switch accessibilityLabel={label} disabled={disabled} value={value} onValueChange={onChange}
-      trackColor={{false: t.secondary, true: t.primary}} thumbColor="#fff" /></View>;
+    <Toggle label={label} value={value} onChange={onChange} disabled={disabled} /></View>;
 }
 function SettingsTab({state: s, run}: {state: NativeState; run: Run}) {
-  const t = useTheme(); const [feed, setFeed] = useState(s.feedUrl);
-  useEffect(() => setFeed(s.feedUrl), [s.feedUrl]);
+  const t = useTheme(); const [feed, setFeed] = useState(typeof s.feedUrl === 'string' ? s.feedUrl : '');
+  useEffect(() => {
+    console.log('[S22] Settings mounted');
+  }, []);
+  useEffect(() => {
+    setFeed(typeof s.feedUrl === 'string' ? s.feedUrl : '');
+  }, [s.feedUrl]);
   return <View style={styles.section}>
     <Card title="Feed"><View style={styles.padded}><Text style={[styles.caption, {color: t.mutedFg}]}>Payload Feed URL</Text>
       <TextInput accessibilityLabel="Payload Feed URL" style={[styles.input, {backgroundColor: t.secondary, color: t.foreground, borderColor: t.border}]}
@@ -206,7 +240,13 @@ export default function App({initialState}: {initialState: string}) {
     const listener = BackHandler.addEventListener('hardwareBackPress', () => { if (tab === 'home') return false; setTab('home'); return true; });
     return () => listener.remove();
   }, [tab]);
-  const run: Run = (name, value = '') => { void native.action(name, value).catch(e => Alert.alert('Action unavailable', e.message)); };
+  const run: Run = (name, value = '') => {
+    console.log('[S22] action: ' + name);
+    void native.action(name, value).catch(e => {
+      console.error('[S22] action failed (' + name + '): ' + (e instanceof Error ? e.message : 'unknown'));
+      Alert.alert('Action unavailable', e instanceof Error ? e.message : 'Unknown error');
+    });
+  };
   return <ThemeContext.Provider value={t}><View style={{flex: 1, backgroundColor: t.background}}>
     <StatusBar backgroundColor={t.background} barStyle={dark ? 'light-content' : 'dark-content'} />
     <Svg style={StyleSheet.absoluteFill} width="100%" height="100%" pointerEvents="none">
@@ -223,7 +263,11 @@ export default function App({initialState}: {initialState: string}) {
           style={[styles.tab, {borderBottomColor: tab === key ? t.primary : 'transparent'}]}>
           <Icon name={key} color={tab === key ? t.primary : t.mutedFg} /><Text style={[styles.body, {color: tab === key ? t.primary : t.mutedFg}]}>{key[0].toUpperCase() + key.slice(1)}</Text>
         </Pressable>)}</View>
-        <Animated.View style={{opacity: fade}}>{tab === 'home' ? <HomeTab state={state} run={run} /> : tab === 'log' ? <LogTab state={state} run={run} /> : <SettingsTab state={state} run={run} />}</Animated.View>
+        <Animated.View style={{opacity: fade}}>{tab === 'home'
+          ? <ScreenErrorBoundary label="home"><HomeTab state={state} run={run} /></ScreenErrorBoundary>
+          : tab === 'log'
+            ? <ScreenErrorBoundary label="log"><LogTab state={state} run={run} /></ScreenErrorBoundary>
+            : <ScreenErrorBoundary label="settings"><SettingsTab state={state} run={run} /></ScreenErrorBoundary>}</Animated.View>
       </View>
     </ScrollView>
     {state.dialog && <Modal transparent animationType="fade" visible onRequestClose={() => { void native.respondDialog(state.dialog!.id, 'dismiss'); }}>
@@ -260,6 +304,8 @@ const styles = StyleSheet.create({
   buttonText: {fontFamily: 'DMSans', fontSize: 14, fontWeight: '600', textAlign: 'center'},
   dataRow: {flexDirection: 'row', gap: 12, paddingHorizontal: 20, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth},
   input: {fontFamily: 'JetBrainsMono', fontSize: 12, borderWidth: 1, borderRadius: 8, padding: 12, minHeight: 48},
-  options: {flexDirection: 'row', gap: 8}, mode: {flex: 1, borderWidth: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center', minHeight: 64, padding: 8, gap: 4},
+  options: {flexDirection: 'row', gap: 8}, toggle: {width: 40, height: 24, borderRadius: 12, justifyContent: 'center'},
+  knob: {position: 'absolute', top: 4, width: 16, height: 16, borderRadius: 8, backgroundColor: '#fff'},
+  mode: {flex: 1, borderWidth: 1, borderRadius: 8, alignItems: 'center', justifyContent: 'center', minHeight: 64, padding: 8, gap: 4},
   accentGrid: {flexDirection: 'row', flexWrap: 'wrap', gap: 8}, accentOption: {width: '48%', minHeight: 48, borderRadius: 8, borderWidth: 1, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 8},
 });

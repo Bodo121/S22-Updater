@@ -78,6 +78,52 @@ test('settings theme controls call native actions without restarting', () => {
   expect(NativeModules.S22Native.action).toHaveBeenCalledWith('colorMode', 'light');
   act(() => tree.unmount());
 });
+function pressToggle(tree, label, expectedValue) {
+  const node = tree.root.findAllByType(Pressable).find(p =>
+    p.props.accessibilityRole === 'switch' && p.props.accessibilityLabel === label);
+  expect(node).toBeDefined();
+  const before = NativeModules.S22Native.action.mock.calls.length;
+  act(() => { node.props.onPress(); });
+  expect(NativeModules.S22Native.action).toHaveBeenCalledWith(
+    expectedValue[0], expectedValue[1]);
+  expect(NativeModules.S22Native.action.mock.calls.length).toBe(before + 1);
+}
+test('settings renders with incomplete native state and mutates nothing on open', () => {
+  const tree = mount({revision: 1});
+  press(tree, 'Settings');
+  expect(text(tree)).toContain('Appearance');
+  expect(text(tree)).toContain('No Session');
+  expect(NativeModules.S22Native.action).not.toHaveBeenCalled();
+  act(() => tree.unmount());
+});
+test('malformed initial state falls back to safe defaults', () => {
+  let tree;
+  act(() => { tree = renderer.create(<App initialState="not-json{{{[" />); });
+  press(tree, 'Settings');
+  expect(text(tree)).toContain('Appearance');
+  act(() => tree.unmount());
+  act(() => { tree = renderer.create(<App initialState="null" />); });
+  press(tree, 'Settings');
+  expect(text(tree)).toContain('Appearance');
+  act(() => tree.unmount());
+});
+test('settings toggles work without legacy switches', () => {
+  const tree = mount();
+  press(tree, 'Settings');
+  pressToggle(tree, 'Auto-check for updates', ['autoUpdate', 'true']);
+  pressToggle(tree, 'Load KernelSU after a successful root check', ['autoKernel', 'true']);
+  act(() => tree.unmount());
+});
+test('repeated settings open/close does not crash', () => {
+  const tree = mount();
+  for (let i = 0; i < 3; i++) {
+    press(tree, 'Settings');
+    expect(text(tree)).toContain('Appearance');
+    press(tree, 'Home');
+    expect(text(tree)).toContain('Check feed');
+  }
+  act(() => tree.unmount());
+});
 test('dialog confirmation sends only native-issued id and choice', () => {
   const tree = mount({...base, dialog: {id: 12, title: 'Exploit completed', message: 'Load module?', primary: 'LOAD KERNELSU'}});
   press(tree, 'LOAD KERNELSU');

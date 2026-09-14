@@ -794,14 +794,8 @@ public class MainActivity extends Activity {
     }
 
     private void resetFeed() {
-        selected = null;
-        payloads.clear();
-        payloadVerified = false;
-        preferences.edit().remove("feed_json").remove("selected_payload")
-                .remove("payload_verified").remove("payload_verified_id")
-                .remove("payload_verified_sha").remove("payload_verified_size").apply();
-        status.setText("Feed changed — check for updates");
-        saveStatus("Feed changed — check for updates");
+        resetFeedState();
+        setStatusTextBestEffort("Feed changed — check for updates");
         refreshControls();
     }
 
@@ -1150,10 +1144,13 @@ public class MainActivity extends Activity {
     }
 
     private void refreshControls() {
-        for (Button button : actions) { button.setEnabled(!busy); button.setAlpha(busy ? .5f : 1f); }
-        feedInput.setEnabled(!busy);
-        automaticKernel.setEnabled(!busy);
-        automaticAppUpdate.setEnabled(!busy);
+        for (Button button : actions) {
+            if (button == null) continue;
+            button.setEnabled(!busy); button.setAlpha(busy ? .5f : 1f);
+        }
+        if (feedInput != null) feedInput.setEnabled(!busy);
+        if (automaticKernel != null) automaticKernel.setEnabled(!busy);
+        if (automaticAppUpdate != null) automaticAppUpdate.setEnabled(!busy);
         updateFlow();
     }
 
@@ -2172,6 +2169,10 @@ public class MainActivity extends Activity {
                 installPermStatus, flowAction}) if (view != null) view.addTextChangedListener(watcher);
     }
 
+    private static String textOf(TextView view) {
+        return view == null ? "" : String.valueOf(view.getText());
+    }
+
     protected final String presentationSnapshot() {
         try {
             JSONObject s = new JSONObject();
@@ -2190,17 +2191,17 @@ public class MainActivity extends Activity {
             s.put("currentStage", stepIndex(flowStep()));
             s.put("steps", new JSONArray(Arrays.asList(feedReady(), payloadReady(), rooted(),
                     exploitRooted, ksuLoaded, ksuWorking)));
-            s.put("status", status.getText()); s.put("hint", flowHint.getText());
-            s.put("actionLabel", flowAction.getText()); s.put("failedStage", failedStep);
-            s.put("progress", progress.getVisibility() == View.VISIBLE && !progress.isIndeterminate()
+            s.put("status", textOf(status)); s.put("hint", textOf(flowHint));
+            s.put("actionLabel", textOf(flowAction)); s.put("failedStage", failedStep);
+            s.put("progress", progress != null && progress.getVisibility() == View.VISIBLE && !progress.isIndeterminate()
                     ? progress.getProgress() / 10.0 : JSONObject.NULL);
             s.put("model", Build.MODEL); s.put("manufacturer", Build.MANUFACTURER);
             s.put("firmware", Build.DISPLAY); s.put("android", Build.VERSION.RELEASE);
             s.put("version", AppUpdate.installedName(this));
-            s.put("doctor", doctorStatus.getText()); s.put("manager", managerStatus.getText());
-            s.put("shizuku", shizukuStatus.getText()); s.put("logs", activityLog.getText());
-            s.put("runLog", homeLog.getText()); s.put("changelog", changelog.getText());
-            s.put("update", appUpdateStatus.getText()); s.put("installPermission", installPermStatus.getText());
+            s.put("doctor", textOf(doctorStatus)); s.put("manager", textOf(managerStatus));
+            s.put("shizuku", textOf(shizukuStatus)); s.put("logs", textOf(activityLog));
+            s.put("runLog", textOf(homeLog)); s.put("changelog", textOf(changelog));
+            s.put("update", textOf(appUpdateStatus)); s.put("installPermission", textOf(installPermStatus));
             s.put("feedUrl", preferences.getString("feed_url", FEED));
             s.put("accent", preferences.getString("theme_color", "teal"));
             s.put("colorMode", preferences.getString("color_mode", "system"));
@@ -2213,38 +2214,93 @@ public class MainActivity extends Activity {
         } catch (JSONException e) { throw new IllegalStateException(e); }
     }
 
+    /**
+     * View-independent settings core for the React Native bridge. Must work even if
+     * ZERO legacy Android Views have been constructed: touches only preferences and
+     * plain fields. Never call setChecked/setText/setVisibility here, and never
+     * recreate the activity (that would destroy the live React host).
+     */
+    protected final void applyPresentationSetting(String action, String value) {
+        switch (action) {
+            case "accent":
+                if (!Arrays.asList("teal", "amber", "violet", "material").contains(value))
+                    throw new IllegalArgumentException("Unknown accent");
+                preferences.edit().putString("theme_color", value).apply();
+                applyPalette(darkMode);
+                return;
+            case "colorMode":
+                if (!Arrays.asList("dark", "light", "system").contains(value))
+                    throw new IllegalArgumentException("Unknown color mode");
+                preferences.edit().putString("color_mode", value).apply();
+                return;
+            case "autoUpdate":
+                preferences.edit().putBoolean("auto_app_update", parseBridgeBoolean(value)).apply();
+                return;
+            case "autoKernel":
+                preferences.edit().putBoolean("auto_kernel", parseBridgeBoolean(value)).apply();
+                return;
+            case "advanced":
+                advancedMode = parseBridgeBoolean(value);
+                preferences.edit().putBoolean("advanced_mode", advancedMode).apply();
+                return;
+            case "saveFeed": {
+                final String url;
+                try {
+                    url = Network.validate(value == null ? "" : value.trim()).toString();
+                } catch (Exception e) {
+                    throw new IllegalArgumentException(e.getMessage());
+                }
+                preferences.edit().putString("feed_url", url).apply();
+                resetFeedState();
+                setStatusTextBestEffort("Feed changed — check for updates");
+                return;
+            }
+            case "restoreFeed":
+                preferences.edit().putString("feed_url", FEED).apply();
+                resetFeedState();
+                setStatusTextBestEffort("Feed changed — check for updates");
+                return;
+            default: throw new IllegalArgumentException("Unknown action");
+        }
+    }
+
+    private static boolean parseBridgeBoolean(String value) {
+        if ("true".equals(value)) return true;
+        if ("false".equals(value)) return false;
+        throw new IllegalArgumentException("Expected true/false");
+    }
+
+    /** Clears cached feed/payload selection. No View access; safe without legacy UI. */
+    private void resetFeedState() {
+        selected = null;
+        payloads.clear();
+        payloadVerified = false;
+        preferences.edit().remove("feed_json").remove("selected_payload")
+                .remove("payload_verified").remove("payload_verified_id")
+                .remove("payload_verified_sha").remove("payload_verified_size").apply();
+    }
+
+    /** Persists status text and updates the legacy view only when it exists. */
+    private void setStatusTextBestEffort(String value) {
+        saveStatus(value);
+        if (status != null) status.setText(value);
+    }
+
     protected final void presentationAction(String action, String value) {
         if (busy) throw new IllegalStateException("Wait for the current action to finish");
         if ("primary".equals(action)) { primaryAction(); return; }
-        // This seam is only invoked from the React Native host, which renders its
-        // theme from snapshot state. Restarting the activity here (as the legacy
-        // native buttons do) would tear down the live React host and crash, so
-        // persist + refresh state instead; the next snapshot drives the new theme.
-        if ("accent".equals(action)) {
-            if (!Arrays.asList("teal", "amber", "violet", "material").contains(value))
-                throw new IllegalArgumentException("Unknown accent");
-            preferences.edit().putString("theme_color", value).apply();
-            applyPalette(darkMode);
-            updateFlow();
-            return;
-        }
-        if ("colorMode".equals(action)) {
-            if (!Arrays.asList("dark", "light", "system").contains(value))
-                throw new IllegalArgumentException("Unknown color mode");
-            preferences.edit().putString("color_mode", value).apply();
-            updateFlow();
-            return;
-        }
-        if ("autoUpdate".equals(action)) { automaticAppUpdate.setChecked(Boolean.parseBoolean(value)); return; }
-        if ("autoKernel".equals(action)) { automaticKernel.setChecked(Boolean.parseBoolean(value)); return; }
-        if ("advanced".equals(action)) {
-            advancedMode = Boolean.parseBoolean(value);
-            preferences.edit().putBoolean("advanced_mode", advancedMode).apply(); updateFlow(); return;
+        // Settings/preference actions are handled by the view-independent core above,
+        // which must keep working even if no legacy View was ever constructed. The
+        // React host publishes a fresh snapshot afterwards, so no legacy UI refresh
+        // (and no activity restart) is needed here.
+        switch (action) {
+            case "accent": case "colorMode": case "autoUpdate": case "autoKernel":
+            case "advanced": case "saveFeed": case "restoreFeed":
+                applyPresentationSetting(action, value);
+                return;
         }
         String label;
         switch (action) {
-            case "saveFeed": feedInput.setText(value); label = "Save feed URL"; break;
-            case "restoreFeed": label = "Restore default feed"; break;
             case "checkRoot": label = "Check root"; break;
             case "authorizeShizuku": label = "Authorize Shizuku"; break;
             case "openShizuku": label = "Open Shizuku app"; break;

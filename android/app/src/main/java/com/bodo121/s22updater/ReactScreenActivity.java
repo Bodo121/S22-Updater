@@ -21,12 +21,17 @@ public final class ReactScreenActivity extends MainActivity implements DefaultHa
     private org.json.JSONObject dialog;
     private Runnable dialogPrimary, dialogSecondary;
     private long dialogId;
+    private volatile boolean destroyed;
     private final Runnable emit = () -> {
-        if (manager == null) return;
-        ReactContext context = manager.getCurrentReactContext();
-        if (context != null && context.hasActiveReactInstance())
-            context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
-                    .emit("S22State", snapshot());
+        if (manager == null || destroyed) return;
+        try {
+            ReactContext context = manager.getCurrentReactContext();
+            if (context != null && context.hasActiveReactInstance())
+                context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter.class)
+                        .emit("S22State", snapshot());
+        } catch (Throwable t) {
+            android.util.Log.w("S22Bridge", "state snapshot publish failed", t);
+        }
     };
 
     String snapshot() {
@@ -35,7 +40,12 @@ public final class ReactScreenActivity extends MainActivity implements DefaultHa
                     .put("dialog", dialog == null ? org.json.JSONObject.NULL : dialog).toString();
         } catch (org.json.JSONException e) { throw new IllegalStateException(e); }
     }
-    void executeAction(String name, String value) { presentationAction(name, value); changed(); }
+    void executeAction(String name, String value) {
+        if (destroyed) throw new IllegalStateException("Activity is destroyed");
+        android.util.Log.i("S22Bridge", "action=" + name);
+        presentationAction(name, value);
+        changed();
+    }
     private void changed() { events.removeCallbacks(emit); events.post(emit); }
 
     @Override protected void showSheet(String title, String message, String primary, Runnable primaryAction,
@@ -88,9 +98,22 @@ public final class ReactScreenActivity extends MainActivity implements DefaultHa
         if (manager != null) manager.onActivityResult(this, request, result, data);
     }
     @Override protected void onDestroy() {
+        destroyed = true;
         events.removeCallbacksAndMessages(null);
-        if (root != null) root.unmountReactApplication();
-        if (manager != null) { manager.onHostDestroy(this); manager.destroy(); }
+        try {
+            if (root != null) root.unmountReactApplication();
+        } catch (Throwable t) {
+            android.util.Log.w("S22Bridge", "react unmount failed", t);
+        } finally {
+            root = null;
+        }
+        try {
+            if (manager != null) { manager.onHostDestroy(this); manager.destroy(); }
+        } catch (Throwable t) {
+            android.util.Log.w("S22Bridge", "react host destroy failed", t);
+        } finally {
+            manager = null;
+        }
         super.onDestroy();
     }
 }
