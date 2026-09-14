@@ -2216,15 +2216,24 @@ public class MainActivity extends Activity {
     protected final void presentationAction(String action, String value) {
         if (busy) throw new IllegalStateException("Wait for the current action to finish");
         if ("primary".equals(action)) { primaryAction(); return; }
+        // This seam is only invoked from the React Native host, which renders its
+        // theme from snapshot state. Restarting the activity here (as the legacy
+        // native buttons do) would tear down the live React host and crash, so
+        // persist + refresh state instead; the next snapshot drives the new theme.
         if ("accent".equals(action)) {
             if (!Arrays.asList("teal", "amber", "violet", "material").contains(value))
                 throw new IllegalArgumentException("Unknown accent");
-            setThemeChoice(value); return;
+            preferences.edit().putString("theme_color", value).apply();
+            applyPalette(darkMode);
+            updateFlow();
+            return;
         }
         if ("colorMode".equals(action)) {
             if (!Arrays.asList("dark", "light", "system").contains(value))
                 throw new IllegalArgumentException("Unknown color mode");
-            setColorModeChoice(value); return;
+            preferences.edit().putString("color_mode", value).apply();
+            updateFlow();
+            return;
         }
         if ("autoUpdate".equals(action)) { automaticAppUpdate.setChecked(Boolean.parseBoolean(value)); return; }
         if ("autoKernel".equals(action)) { automaticKernel.setChecked(Boolean.parseBoolean(value)); return; }

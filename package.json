@@ -1,6 +1,6 @@
 {
   "name": "s22-updater",
-  "version": "6.2.3",
+  "version": "6.2.4",
   "private": true,
   "scripts": {
     "test": "jest --runInBand",

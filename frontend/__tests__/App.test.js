@@ -9,7 +9,7 @@ const base = {
   rootGranted: false, shizukuGranted: false, ksuModuleLoaded: false, ksuPermissionPending: false,
   ksuRootActive: false, busy: false, steps: [false, false, false, false, false, false], currentStage: 0,
   failedStage: '', status: 'Ready', hint: 'Unsupported build', actionLabel: 'Run Device Doctor', progress: null,
-  model: 'test', manufacturer: 'test', firmware: 'test', android: '10', version: '6.2.3',
+  model: 'test', manufacturer: 'test', firmware: 'test', android: '10', version: '6.2.4',
   logs: '', runLog: '', doctor: 'Not checked', manager: 'Not detected', shizuku: 'Not connected',
   changelog: '', update: '', installPermission: '', feedUrl: 'https://example.org/feed',
   accent: 'teal', colorMode: 'dark', autoUpdate: false, autoKernel: false, advanced: false,
@@ -67,6 +67,15 @@ test('busy state disables primary action and progress uses native numeric value'
     p.findAllByType(Text).some(t => t.props.children === base.actionLabel));
   expect(primary.props.disabled).toBe(true);
   expect(tree.root.findAll(n => n.props.accessibilityRole === 'progressbar')[0].props.accessibilityValue.now).toBe(37);
+  act(() => tree.unmount());
+});
+test('settings theme controls call native actions without restarting', () => {
+  const tree = mount();
+  press(tree, 'Settings');
+  press(tree, 'Violet');
+  expect(NativeModules.S22Native.action).toHaveBeenCalledWith('accent', 'violet');
+  press(tree, 'Light');
+  expect(NativeModules.S22Native.action).toHaveBeenCalledWith('colorMode', 'light');
   act(() => tree.unmount());
 });
 test('dialog confirmation sends only native-issued id and choice', () => {
