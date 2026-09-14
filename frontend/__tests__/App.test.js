@@ -9,7 +9,7 @@ const base = {
   rootGranted: false, shizukuGranted: false, ksuModuleLoaded: false, ksuPermissionPending: false,
   ksuRootActive: false, busy: false, steps: [false, false, false, false, false, false], currentStage: 0,
   failedStage: '', status: 'Ready', hint: 'Unsupported build', actionLabel: 'Run Device Doctor', progress: null,
-  model: 'test', manufacturer: 'test', firmware: 'test', android: '10', version: '6.2.4',
+  model: 'test', manufacturer: 'test', firmware: 'test', android: '10', version: '6.2.5',
   logs: '', runLog: '', doctor: 'Not checked', manager: 'Not detected', shizuku: 'Not connected',
   changelog: '', update: '', installPermission: '', feedUrl: 'https://example.org/feed',
   accent: 'teal', colorMode: 'dark', autoUpdate: false, autoKernel: false, advanced: false,

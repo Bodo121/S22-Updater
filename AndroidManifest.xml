@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.bodo121.s22updater"
-    android:versionCode="22"
-    android:versionName="6.2.4">
+    android:versionCode="23"
+    android:versionName="6.2.5">
 
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="34" />
     <uses-permission android:name="android.permission.INTERNET" />

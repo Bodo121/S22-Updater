@@ -1,4 +1,4 @@
-# S22 Updater 6.2.4
+# S22 Updater 6.2.5
 
 A clean control center for the personal IONSTACK-S22 / KernelSU phone project.
 The app keeps the one-button root/update flow and persists progress across app
@@ -11,7 +11,7 @@ Get the current APK, `SHA256SUMS`, and `app-update.json` from
 
 ```sh
 sha256sum -c SHA256SUMS
-adb install -r S22-Updater-v6.2.4.apk
+adb install -r S22-Updater-v6.2.5.apk
 ```
 
 Android 9 or later is required.
