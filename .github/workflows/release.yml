@@ -130,7 +130,7 @@ jobs:
           echo "SIGN_KEYSTORE=$PWD/release.keystore" >> "$GITHUB_ENV"
           echo "using repository signing key"
 
-      - name: Build APK
+      - name: Build legacy APK (backend verification only)
         env:
           BT: ${{ env.ANDROID_HOME }}/build-tools/34.0.0
           PLATFORM: ${{ env.ANDROID_HOME }}/platforms/android-34/android.jar
@@ -145,6 +145,41 @@ jobs:
           BT: ${{ env.ANDROID_HOME }}/build-tools/34.0.0
           PLATFORM: ${{ env.ANDROID_HOME }}/platforms/android-34/android.jar
         run: bash tests/check.sh
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: React Native checks and bundle
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm run typecheck
+          npm test -- --runInBand
+          npm run bundle
+
+      - name: Build React Native release APK
+        env:
+          SIGN_KEYSTORE: ${{ env.SIGN_KEYSTORE }}
+          SIGN_STORE_PASS: ${{ secrets.SIGN_STORE_PASS }}
+          SIGN_KEY_PASS: ${{ secrets.SIGN_KEY_PASS }}
+          SIGN_ALIAS: ${{ secrets.SIGN_ALIAS }}
+          EXPECTED_CERT: ${{ secrets.SIGN_EXPECTED_CERT_SHA256 || env.RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          chmod +x android/gradlew
+          (cd android && ./gradlew --no-daemon --max-workers=2 :app:assembleRelease)
+          RN_APK=android/app/build/outputs/apk/release/app-release.apk
+          [ -f "$RN_APK" ] || { echo "React Native release APK missing" >&2; exit 1; }
+          CERT_REPORT="$("$ANDROID_HOME/build-tools/34.0.0/apksigner" verify --verbose --print-certs "$RN_APK")"
+          printf '%s\n' "$CERT_REPORT"
+          printf '%s\n' "$CERT_REPORT" | grep -qi "$EXPECTED_CERT" \
+            || { echo "RN APK signer does not match expected release certificate" >&2; exit 1; }
+          VERSION_NAME="$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' AndroidManifest.xml | head -n 1)"
+          rm -f out/S22-Updater-v*.apk
+          cp "$RN_APK" "out/S22-Updater-v$VERSION_NAME.apk"
 
       - name: Generate release files
         shell: bash

@@ -8,3 +8,8 @@ local.properties
 .signature-log
 .idea/
 .DS_Store
+/node_modules/
+/android/.gradle/
+/android/build/
+/android/app/build/
+/android/app/src/main/assets/*.bundle

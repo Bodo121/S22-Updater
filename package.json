@@ -1,0 +1,26 @@
+{
+  "name": "s22-updater",
+  "version": "6.2.2",
+  "private": true,
+  "scripts": {
+    "test": "jest --runInBand",
+    "typecheck": "tsc --noEmit",
+    "start": "react-native start",
+    "bundle": "react-native bundle --platform android --dev false --entry-file index.js --bundle-output android/app/src/main/assets/index.android.bundle --assets-dest android/app/src/main/res"
+  },
+  "dependencies": {
+    "react": "18.2.0",
+    "react-native": "0.74.7",
+    "react-native-svg": "15.3.0"
+  },
+  "devDependencies": {
+    "@babel/core": "7.25.2",
+    "@react-native/babel-preset": "0.74.89",
+    "@react-native/metro-config": "0.74.89",
+    "@types/jest": "29.5.14",
+    "@types/react": "18.2.79",
+    "jest": "29.7.0",
+    "react-test-renderer": "18.2.0",
+    "typescript": "5.5.4"
+  }
+}

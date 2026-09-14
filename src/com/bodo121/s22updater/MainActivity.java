@@ -913,7 +913,7 @@ public class MainActivity extends Activity {
         showSheet("Action failed", message, "OK", null, null, null);
     }
 
-    private void showSheet(String title, String message, String primary, final Runnable primaryAction,
+    protected void showSheet(String title, String message, String primary, final Runnable primaryAction,
                            String secondary, final Runnable secondaryAction) {
         if (closed || isFinishing()) return;
         final Dialog dialog = new Dialog(this);
@@ -2160,6 +2160,105 @@ public class MainActivity extends Activity {
         @Override public void setColorFilter(android.graphics.ColorFilter colorFilter) { }
         @Override public int getOpacity() { return android.graphics.PixelFormat.OPAQUE; }
     }
+    /** Presentation-only integration seam. All callers run on the Android UI thread. */
+    protected final void observePresentation(Runnable changed) {
+        android.text.TextWatcher watcher = new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            public void onTextChanged(CharSequence s, int start, int before, int count) { changed.run(); }
+            public void afterTextChanged(android.text.Editable s) { }
+        };
+        for (TextView view : new TextView[]{status, flowHint, rootStatus, kernelStatus, shizukuStatus,
+                managerStatus, activityLog, homeLog, changelog, doctorStatus, appUpdateStatus,
+                installPermStatus, flowAction}) if (view != null) view.addTextChangedListener(watcher);
+    }
+
+    protected final String presentationSnapshot() {
+        try {
+            JSONObject s = new JSONObject();
+            s.put("deviceSupported", deviceChecked && supportedDevice());
+            s.put("deviceChecked", deviceChecked);
+            s.put("feedChecked", feedReady()); s.put("payloadReady", payloadReady());
+            s.put("temporaryRootActive", exploitRooted); s.put("exploitCompleted", exploitRooted);
+            s.put("rootGranted", rootGranted); s.put("shizukuGranted", shizukuGranted);
+            s.put("ksuModuleLoaded", ksuLoaded); s.put("ksuPermissionPending", ksuLoaded && !ksuWorking);
+            s.put("ksuRootActive", ksuWorking); s.put("busy", busy);
+            s.put("state", ksuWorking ? "KSU_ROOT_ACTIVE"
+                    : ksuLoaded && managerInstalled() ? "WAITING_FOR_MANAGER"
+                    : ksuLoaded ? "KSU_MODULE_LOADED"
+                    : busy && flowStep().equals("run") ? "EXPLOIT_RUNNING"
+                    : exploitRooted ? "EXPLOIT_COMPLETE" : "NOT_ROOTED");
+            s.put("currentStage", stepIndex(flowStep()));
+            s.put("steps", new JSONArray(Arrays.asList(feedReady(), payloadReady(), rooted(),
+                    exploitRooted, ksuLoaded, ksuWorking)));
+            s.put("status", status.getText()); s.put("hint", flowHint.getText());
+            s.put("actionLabel", flowAction.getText()); s.put("failedStage", failedStep);
+            s.put("progress", progress.getVisibility() == View.VISIBLE && !progress.isIndeterminate()
+                    ? progress.getProgress() / 10.0 : JSONObject.NULL);
+            s.put("model", Build.MODEL); s.put("manufacturer", Build.MANUFACTURER);
+            s.put("firmware", Build.DISPLAY); s.put("android", Build.VERSION.RELEASE);
+            s.put("version", AppUpdate.installedName(this));
+            s.put("doctor", doctorStatus.getText()); s.put("manager", managerStatus.getText());
+            s.put("shizuku", shizukuStatus.getText()); s.put("logs", activityLog.getText());
+            s.put("runLog", homeLog.getText()); s.put("changelog", changelog.getText());
+            s.put("update", appUpdateStatus.getText()); s.put("installPermission", installPermStatus.getText());
+            s.put("feedUrl", preferences.getString("feed_url", FEED));
+            s.put("accent", preferences.getString("theme_color", "teal"));
+            s.put("colorMode", preferences.getString("color_mode", "system"));
+            s.put("autoUpdate", preferences.getBoolean("auto_app_update", false));
+            s.put("autoKernel", preferences.getBoolean("auto_kernel", false));
+            s.put("advanced", preferences.getBoolean("advanced_mode", false));
+            s.put("payload", selected == null ? JSONObject.NULL : new JSONObject()
+                    .put("id", selected.id).put("name", selected.name).put("size", selected.size).put("sha", selected.sha));
+            return s.toString();
+        } catch (JSONException e) { throw new IllegalStateException(e); }
+    }
+
+    protected final void presentationAction(String action, String value) {
+        if (busy) throw new IllegalStateException("Wait for the current action to finish");
+        if ("primary".equals(action)) { primaryAction(); return; }
+        if ("accent".equals(action)) {
+            if (!Arrays.asList("teal", "amber", "violet", "material").contains(value))
+                throw new IllegalArgumentException("Unknown accent");
+            setThemeChoice(value); return;
+        }
+        if ("colorMode".equals(action)) {
+            if (!Arrays.asList("dark", "light", "system").contains(value))
+                throw new IllegalArgumentException("Unknown color mode");
+            setColorModeChoice(value); return;
+        }
+        if ("autoUpdate".equals(action)) { automaticAppUpdate.setChecked(Boolean.parseBoolean(value)); return; }
+        if ("autoKernel".equals(action)) { automaticKernel.setChecked(Boolean.parseBoolean(value)); return; }
+        if ("advanced".equals(action)) {
+            advancedMode = Boolean.parseBoolean(value);
+            preferences.edit().putBoolean("advanced_mode", advancedMode).apply(); updateFlow(); return;
+        }
+        String label;
+        switch (action) {
+            case "saveFeed": feedInput.setText(value); label = "Save feed URL"; break;
+            case "restoreFeed": label = "Restore default feed"; break;
+            case "checkRoot": label = "Check root"; break;
+            case "authorizeShizuku": label = "Authorize Shizuku"; break;
+            case "openShizuku": label = "Open Shizuku app"; break;
+            case "diagnoseShizuku": label = "Diagnose Shizuku handshake"; break;
+            case "openManager": label = "Open KernelSU Manager"; break;
+            case "recheckKsu": label = "Recheck KernelSU"; break;
+            case "doctor": label = "Run Device Doctor"; break;
+            case "copyDiagnostics": label = "Copy diagnostics"; break;
+            case "shareDiagnostics": label = "Share diagnostics"; break;
+            case "copyIssue": label = "Copy GitHub issue report"; break;
+            case "changelog": label = "Refresh changelog"; break;
+            case "appUpdate": label = "Check for app updates"; break;
+            case "allowInstalls": label = "Allow app installs"; break;
+            case "exportPayload": label = "Export downloaded payload"; break;
+            case "clearCache": label = "Clear payload cache"; break;
+            default: throw new IllegalArgumentException("Unknown action");
+        }
+        for (Button button : actions) if (label.contentEquals(button.getText())) {
+            button.performClick(); return;
+        }
+        throw new IllegalStateException("Native action is unavailable: " + label);
+    }
+
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state); state.putInt("page", pageIndex);
         if (exportFile != null) state.putString("export_file", exportFile.getName());

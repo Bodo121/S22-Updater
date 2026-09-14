@@ -1,0 +1,50 @@
+plugins { id 'com.android.application'; id 'com.facebook.react' }
+
+def originalManifest = file('../../AndroidManifest.xml').text
+def manifestVersionCode = (originalManifest =~ /android:versionCode="(\d+)"/)[0][1].toInteger()
+def manifestVersionName = (originalManifest =~ /android:versionName="([^"]+)"/)[0][1]
+react {
+    root = file('../..')
+    entryFile = file('../../index.js')
+    // Both builds work offline; no Metro server is needed on the phone.
+    debuggableVariants = []
+}
+android {
+    namespace 'com.bodo121.s22updater'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'com.bodo121.s22updater'
+        minSdk 28
+        targetSdk 34
+        versionCode manifestVersionCode
+        versionName manifestVersionName
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+    }
+    sourceSets.main {
+        java.srcDirs += ['../../src']
+        res.srcDirs += ['../../res']
+    }
+    signingConfigs {
+        release {
+            if (System.getenv('SIGN_KEYSTORE')) {
+                storeFile file(System.getenv('SIGN_KEYSTORE'))
+                storePassword System.getenv('SIGN_STORE_PASS')
+                keyAlias System.getenv('SIGN_ALIAS')
+                keyPassword System.getenv('SIGN_KEY_PASS')
+            }
+        }
+    }
+    buildTypes {
+        debug { }
+        release { signingConfig signingConfigs.release; minifyEnabled false }
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_1_8; targetCompatibility JavaVersion.VERSION_1_8 }
+    packagingOptions { jniLibs { useLegacyPackaging = false } }
+}
+dependencies {
+    implementation 'com.facebook.react:react-android:0.74.7'
+    implementation 'com.facebook.react:hermes-android:0.74.7'
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
+    implementation project(':react-native-svg')
+}
