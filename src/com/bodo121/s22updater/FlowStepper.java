@@ -4,11 +4,10 @@ import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
-import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.view.View;
 
-/** Compact Material-style vertical stepper for the one-button Home flow. */
+/** Compact six-stage segmented strip matching the React design. */
 final class FlowStepper extends View {
     private final String[] labels = {
             "Check feed", "Download", "Root", "Exploit", "KernelSU", "Manager"};
@@ -23,7 +22,7 @@ final class FlowStepper extends View {
     FlowStepper(Context context) {
         super(context);
         paint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
-        setMinimumHeight(dp(224));
+        setMinimumHeight(dp(86));
     }
 
     void setColors(int ink, int muted, int accent, int success, int danger, int surface) {
@@ -56,74 +55,47 @@ final class FlowStepper extends View {
     }
 
     @Override protected void onMeasure(int widthSpec, int heightSpec) {
-        int min = dp(224);
+        int min = dp(86);
         int height = resolveSize(min, heightSpec);
         setMeasuredDimension(resolveSize(dp(280), widthSpec), Math.max(min, height));
     }
 
     @Override protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        int left = dp(24);
-        int top = dp(18);
-        int gap = Math.max(dp(34), (getHeight() - dp(36)) / Math.max(1, labels.length - 1));
-        int textLeft = dp(58);
-        int radius = dp(11);
-        paint.setStrokeWidth(dp(2));
-        for (int i = 0; i < labels.length - 1; i++) {
-            paint.setColor(done[i] && done[i + 1] ? success : blend(muted, surface, .52f));
-            canvas.drawLine(left, top + i * gap + radius + dp(2), left,
-                    top + (i + 1) * gap - radius - dp(2), paint);
-        }
+        int width = getWidth() - dp(8);
+        int left = dp(4);
+        int segmentGap = dp(4);
+        int segmentWidth = Math.max(dp(22), (width - segmentGap * (labels.length - 1)) / labels.length);
+        int top = dp(12);
+        int barHeight = dp(5);
         for (int i = 0; i < labels.length; i++) {
-            int y = top + i * gap;
+            int x = left + i * (segmentWidth + segmentGap);
             boolean isFailed = i == failed;
             boolean isActive = i == active && !done[i] && failed < 0;
             int color = isFailed ? danger : done[i] ? success : isActive ? accent : muted;
             paint.setStyle(Paint.Style.FILL);
-            paint.setColor(blend(color, surface, done[i] || isActive || isFailed ? .82f : .92f));
-            canvas.drawCircle(left, y, isActive ? radius * pulse : radius, paint);
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(dp(2));
-            paint.setColor(color);
-            canvas.drawCircle(left, y, radius, paint);
+            paint.setColor(done[i] ? blend(color, surface, .45f) : isActive || isFailed ? color : blend(muted, surface, .62f));
+            canvas.drawRoundRect(x, top, x + segmentWidth, top + barHeight, dp(3), dp(3), paint);
             paint.setStyle(Paint.Style.FILL);
-            paint.setStrokeWidth(dp(2));
-            if (done[i]) drawCheck(canvas, left, y, color);
-            else if (isFailed) drawCross(canvas, left, y, color);
-            else {
-                paint.setColor(color);
-                paint.setTextAlign(Paint.Align.CENTER);
-                paint.setTextSize(dp(11));
-                paint.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
-                canvas.drawText(String.valueOf(i + 1), left, y + dp(4), paint);
-            }
-            paint.setTextAlign(Paint.Align.LEFT);
-            paint.setTextSize(dp(isActive || done[i] ? 15 : 14));
+            paint.setTextAlign(Paint.Align.CENTER);
+            paint.setTextSize(dp(10));
             paint.setTypeface(Typeface.create("sans-serif", isActive || done[i] ? Typeface.BOLD : Typeface.NORMAL));
             paint.setColor(isActive || done[i] || isFailed ? ink : muted);
-            canvas.drawText(labels[i], textLeft, y + dp(5), paint);
+            canvas.drawText(shortLabel(labels[i]), x + segmentWidth / 2f, top + dp(28), paint);
             if (isActive || isFailed) {
                 paint.setTextSize(dp(11));
-                paint.setTypeface(Typeface.create("sans-serif", Typeface.NORMAL));
+                paint.setTypeface(Typeface.MONOSPACE);
                 paint.setColor(isFailed ? danger : accent);
-                canvas.drawText(isFailed ? "Needs retry" : "In progress", textLeft, y + dp(21), paint);
+                canvas.drawText(isFailed ? "retry" : "active", x + segmentWidth / 2f, top + dp(45), paint);
             }
         }
         paint.setStyle(Paint.Style.FILL);
     }
 
-    private void drawCheck(Canvas c, int x, int y, int color) {
-        paint.setColor(color);
-        paint.setStrokeWidth(dp(2));
-        c.drawLine(x - dp(5), y, x - dp(1), y + dp(4), paint);
-        c.drawLine(x - dp(1), y + dp(4), x + dp(6), y - dp(5), paint);
-    }
-
-    private void drawCross(Canvas c, int x, int y, int color) {
-        paint.setColor(color);
-        paint.setStrokeWidth(dp(2));
-        c.drawLine(x - dp(5), y - dp(5), x + dp(5), y + dp(5), paint);
-        c.drawLine(x + dp(5), y - dp(5), x - dp(5), y + dp(5), paint);
+    private String shortLabel(String label) {
+        if (label.equals("Check feed")) return "Feed";
+        if (label.equals("KernelSU")) return "KSU";
+        return label;
     }
 
     private int blend(int from, int to, float amount) {

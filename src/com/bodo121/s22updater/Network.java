@@ -21,7 +21,7 @@ final class Network {
             c.setConnectTimeout(15000);
             c.setReadTimeout(20000);
             c.setInstanceFollowRedirects(false);
-            c.setRequestProperty("User-Agent", "S22-Updater/6.2");
+            c.setRequestProperty("User-Agent", "S22-Updater/6.2.1");
             try {
                 int code = c.getResponseCode();
                 if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {

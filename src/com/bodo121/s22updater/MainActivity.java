@@ -5,7 +5,11 @@ import android.app.Dialog;
 import android.content.*;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.RadialGradient;
+import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -33,8 +37,9 @@ public class MainActivity extends Activity {
     private final Button[] tabs = new Button[3];
     private TextView status, flowHint, rootStatus, shizukuStatus, managerStatus,
             kernelStatus, activityLog, changelog, appUpdateStatus, installPermStatus,
-            stepFeed, stepPayload, stepRoot, stepKsu, deviceInfo, homeLog,
-            rootChip, appearanceStatus, logEmpty, doctorStatus;
+            stepFeed, stepPayload, stepRoot, stepExploit, stepKsu, stepManager, deviceInfo, homeLog,
+            rootChip, appearanceStatus, logEmpty, doctorStatus, payloadInfo;
+    private TextView rootDot, ksuDot;
     private LinearLayout statusCardView;
     private FlowStepper flowStepper;
     private ProgressBar progress;
@@ -51,7 +56,9 @@ public class MainActivity extends Activity {
     private final StringBuilder runLog = new StringBuilder();
     private final AtomicLong shizukuPollSeq = new AtomicLong();
     private volatile boolean closed;
-    private int bg, surface, ink, muted, accent, border, success, danger, warning, pageIndex;
+    private int bg, surface, secondary, mutedSurface, ink, muted, accent, primaryFg,
+            border, success, danger, warning, pageIndex;
+    private boolean darkMode;
     private boolean restoredProgress;
     private boolean deviceChecked, deviceSupportedCached, advancedMode;
     private String deviceReportCached = "";
@@ -99,54 +106,59 @@ public class MainActivity extends Activity {
         preferences = getSharedPreferences("s22updater", MODE_PRIVATE);
         if (state != null && state.containsKey("export_file"))
             exportFile = new File(getFilesDir(), state.getString("export_file"));
-        boolean dark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
+        boolean systemDark = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK)
                 == Configuration.UI_MODE_NIGHT_YES;
+        String colorMode = preferences.getString("color_mode", "system");
+        boolean dark = "dark".equals(colorMode) || (!"light".equals(colorMode) && systemDark);
         applyPalette(dark);
         restoreDurableState();
         getWindow().setStatusBarColor(bg);
-        getWindow().setNavigationBarColor(surface);
+        getWindow().setNavigationBarColor(bg);
         if (!dark) getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);
 
         LinearLayout shell = column();
-        shell.setBackgroundColor(bg);
+        shell.setBackground(new MeshDrawable(bg, accent, darkMode));
         LinearLayout header = row();
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(22), dp(18), dp(22), dp(12));
+        header.setPadding(dp(20), dp(24), dp(20), dp(14));
+        ImageView mark = brandMark(dp(42));
+        LinearLayout.LayoutParams markParams = new LinearLayout.LayoutParams(dp(42), dp(42));
+        markParams.rightMargin = dp(12);
+        header.addView(mark, markParams);
         LinearLayout title = column();
-        text(title, "S22 / CONTROL CENTER", 12, accent, true);
-        text(title, "Your device. Your updates.", 25, ink, true);
-        text(title, "IONSTACK • Version " + AppUpdate.installedName(this), 12, muted, false);
+        text(title, "S22 Updater", 18, ink, true);
+        TextView subtitle = text(title, "Control Center", 10, muted, false);
+        subtitle.setTypeface(Typeface.MONOSPACE);
+        subtitle.setLetterSpacing(0.08f);
         header.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
         rootChip = chip("Root: Not granted", muted);
-        header.addView(rootChip, new LinearLayout.LayoutParams(-2, dp(40)));
+        header.addView(rootChip, new LinearLayout.LayoutParams(-2, dp(34)));
         shell.addView(header);
+        LinearLayout navigation = new LinearLayout(this);
+        navigation.setOrientation(LinearLayout.HORIZONTAL);
+        navigation.setPadding(dp(18), 0, dp(18), 0);
+        String[] names = {"Home", "Log", "Settings"};
+        for (int i = 0; i < tabs.length; i++) {
+            final int index = i;
+            tabs[i] = tabButton(names[i]);
+            tabs[i].setOnClickListener(v -> showPage(index));
+            navigation.addView(tabs[i], new LinearLayout.LayoutParams(0, dp(50), 1));
+        }
+        shell.addView(navigation);
         FrameLayout content = new FrameLayout(this);
         shell.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
         for (int i = 0; i < pages.length; i++) {
             ScrollView scroll = new ScrollView(this);
             scroll.setFillViewport(true);
             pages[i] = column();
-            pages[i].setPadding(dp(18), dp(8), dp(18), dp(24));
+            pages[i].setPadding(dp(16), dp(14), dp(16), dp(28));
             scroll.addView(pages[i]);
             content.addView(scroll, new FrameLayout.LayoutParams(-1, -1));
         }
         buildHome();
         buildLog();
         buildSettings();
-        LinearLayout navigation = new LinearLayout(this);
-        navigation.setBackgroundColor(surface);
-        navigation.setPadding(dp(6), dp(8), dp(6), dp(8));
-        String[] names = {"Home", "Log", "Settings"};
-        for (int i = 0; i < tabs.length; i++) {
-            final int index = i;
-            tabs[i] = makeButton(names[i], false);
-            tabs[i].setTextSize(12);
-            tabs[i].setPadding(0, dp(8), 0, dp(8));
-            tabs[i].setOnClickListener(v -> showPage(index));
-            navigation.addView(tabs[i], new LinearLayout.LayoutParams(0, dp(48), 1));
-        }
-        shell.addView(navigation);
         setContentView(shell);
         applyRestoredState();
         showPage(state == null ? pageIndex : state.getInt("page", pageIndex));
@@ -166,25 +178,38 @@ public class MainActivity extends Activity {
     }
 
     private void applyPalette(boolean dark) {
+        darkMode = dark;
         String theme = preferences.getString("theme_color", "system");
+        if ("blue".equals(theme) || "green".equals(theme)) theme = "teal";
+        if ("purple".equals(theme)) theme = "violet";
+        if ("orange".equals(theme)) theme = "amber";
         int chosen;
         switch (theme) {
-            case "blue": chosen = Color.parseColor("#3F6FE5"); break;
-            case "green": chosen = Color.parseColor("#2E7D32"); break;
-            case "purple": chosen = Color.parseColor("#7B4DFF"); break;
-            case "orange": chosen = Color.parseColor("#C86418"); break;
+            case "teal": chosen = Color.parseColor("#00D4AA"); primaryFg = Color.BLACK; break;
+            case "amber": chosen = Color.parseColor("#F59E0B"); primaryFg = Color.BLACK; break;
+            case "violet": chosen = Color.parseColor("#A78BFA"); primaryFg = Color.BLACK; break;
+            case "material": chosen = Color.parseColor("#6750A4"); primaryFg = Color.WHITE; break;
             default: chosen = resolveColor(android.R.attr.colorAccent,
-                    Color.parseColor(dark ? "#99BBFF" : "#2459CE")); break;
+                    Color.parseColor(dark ? "#00D4AA" : "#008F73")); primaryFg = Color.BLACK; break;
         }
         accent = chosen;
-        bg = blend(accent, dark ? Color.BLACK : Color.WHITE, dark ? .88f : .92f);
-        surface = blend(accent, dark ? Color.BLACK : Color.WHITE, dark ? .76f : .985f);
-        ink = Color.parseColor(dark ? "#F1F4FA" : "#14171F");
-        muted = blend(ink, surface, .42f);
-        border = blend(accent, surface, dark ? .68f : .78f);
-        success = Color.parseColor(dark ? "#81C784" : "#2E7D32");
-        danger = Color.parseColor(dark ? "#FFB4AB" : "#B3261E");
-        warning = Color.parseColor(dark ? "#FFD180" : "#A15C00");
+        boolean material = "material".equals(theme);
+        bg = Color.parseColor(dark ? (material ? "#0F0D13" : "#09090F")
+                : (material ? "#FFFBFE" : "#F5F5F7"));
+        surface = Color.parseColor(dark ? (material ? "#1C1B1F" : "#111118") : "#FFFFFF");
+        secondary = Color.parseColor(dark ? (material ? "#2B2930" : "#1A1A26")
+                : (material ? "#EDE7F6" : "#EBEBF0"));
+        mutedSurface = Color.parseColor(dark ? (material ? "#1C1B1F" : "#161620")
+                : (material ? "#F3EDF7" : "#F0F0F5"));
+        ink = Color.parseColor(dark ? (material ? "#E6E1E5" : "#E8EAF0")
+                : (material ? "#1C1B1F" : "#1A1A26"));
+        muted = Color.parseColor(dark ? (material ? "#938F99" : "#686B7A")
+                : (material ? "#4A4458" : "#5C5F70"));
+        border = Color.parseColor(dark ? (material ? "#2B2930" : "#20202A")
+                : (material ? "#E2DCE8" : "#DFDFE6"));
+        success = Color.parseColor("#00D4AA");
+        danger = Color.parseColor(dark ? "#EF4444" : "#B3261E");
+        warning = Color.parseColor("#F59E0B");
     }
 
     private int resolveColor(int attr, int fallback) {
@@ -548,12 +573,41 @@ public class MainActivity extends Activity {
     }
 
     private void buildHome() {
+        LinearLayout device = card(pages[0], "DEVICE");
+        LinearLayout deviceRow = row();
+        deviceRow.setGravity(Gravity.CENTER_VERTICAL);
+        ImageView deviceIcon = brandMark(dp(48));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+        iconParams.rightMargin = dp(14);
+        deviceRow.addView(deviceIcon, iconParams);
+        LinearLayout deviceText = column();
+        text(deviceText, "Samsung Galaxy S22", 16, ink, true);
+        deviceInfo = text(deviceText, "", 12, muted, false);
+        deviceInfo.setTypeface(Typeface.MONOSPACE);
+        deviceInfo.setTextIsSelectable(true);
+        deviceRow.addView(deviceText, new LinearLayout.LayoutParams(0, -2, 1));
+        device.addView(deviceRow);
+
+        LinearLayout statusGrid = row();
+        statusGrid.setGravity(Gravity.CENTER_VERTICAL);
+        TextView[] rootValue = new TextView[1];
+        TextView[] ksuValue = new TextView[1];
+        TextView[] rootDotValue = new TextView[1];
+        TextView[] ksuDotValue = new TextView[1];
+        metricCard(statusGrid, "Root", rootValue, rootDotValue);
+        metricCard(statusGrid, "KernelSU", ksuValue, ksuDotValue);
+        rootStatus = rootValue[0];
+        kernelStatus = ksuValue[0];
+        rootDot = rootDotValue[0];
+        ksuDot = ksuDotValue[0];
+        pages[0].addView(statusGrid, spaced());
+
         statusCardView = card(pages[0], "ROOT FLOW");
-        status = text(statusCardView, "Ready to check", 24, ink, true);
-        flowHint = text(statusCardView, "Six steps, one action. The active step is highlighted; failures stay local with retry.", 13, muted, false);
+        status = text(statusCardView, "Ready to check", 22, ink, true);
+        flowHint = text(statusCardView, "Six steps, one action. Progress is native state, never a mock.", 12, muted, false);
         flowStepper = new FlowStepper(this);
         flowStepper.setColors(ink, muted, accent, success, danger, surface);
-        statusCardView.addView(flowStepper, new LinearLayout.LayoutParams(-1, dp(238)));
+        statusCardView.addView(flowStepper, new LinearLayout.LayoutParams(-1, dp(94)));
         progress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         progress.setMax(1000);
         progress.setIndeterminateTintList(ColorStateList.valueOf(accent));
@@ -561,39 +615,42 @@ public class MainActivity extends Activity {
         progress.setVisibility(View.GONE);
         statusCardView.addView(progress, new LinearLayout.LayoutParams(-1, dp(8)));
         flowAction = action(statusCardView, "Check for updates", this::primaryAction);
-        LinearLayout steps = card(pages[0], "PROGRESS");
+        LinearLayout steps = card(pages[0], "SIX STAGES");
         stepFeed = text(steps, "○  Update info", 14, muted, false);
         stepPayload = text(steps, "○  Payload", 14, muted, false);
         stepRoot = text(steps, "○  Root access", 14, muted, false);
+        stepExploit = text(steps, "○  Exploit", 14, muted, false);
         stepKsu = text(steps, "○  KernelSU", 14, muted, false);
+        stepManager = text(steps, "○  Manager", 14, muted, false);
         LinearLayout access = card(pages[0], "ACCESS");
-        rootStatus = text(access, "Root: not checked", 14, muted, false);
         action(access, "Check root", this::checkRoot);
-        shizukuStatus = text(access, "Shizuku: not checked", 14, muted, false);
+        shizukuStatus = text(access, "Shizuku: not checked", 13, muted, false);
         action(access, "Authorize Shizuku", this::checkShizuku);
-        text(access, "No root yet? Install Shizuku, start it via wireless debugging, then authorize.", 13, muted, false);
+        text(access, "No root yet? Install Shizuku, start it via wireless debugging, then authorize.", 12, muted, false);
         LinearLayout manager = card(pages[0], "KERNELSU");
         managerStatus = text(manager, "Checking manager…", 16, ink, true);
-        kernelStatus = text(manager, "Kernel module: check root first", 14, muted, false);
         action(manager, "Open KernelSU Manager", this::openManager);
         action(manager, "Recheck KernelSU", this::rediscoverAsync);
-        LinearLayout device = card(pages[0], "DEVICE");
-        deviceInfo = text(device, "", 13, muted, false);
-        deviceInfo.setTextIsSelectable(true);
-        doctorStatus = text(device, "Device Doctor has not run yet.", 13, muted, false);
+        LinearLayout doctor = card(pages[0], "DEVICE DOCTOR");
+        doctorStatus = text(doctor, "Device Doctor has not run yet.", 12, muted, false);
         doctorStatus.setTextIsSelectable(true);
-        action(device, "Run Device Doctor", this::runDoctor);
+        action(doctor, "Run Device Doctor", this::runDoctor);
+        LinearLayout payload = card(pages[0], "LATEST PAYLOAD");
+        payloadInfo = text(payload, "No payload selected yet.", 12, muted, false);
+        payloadInfo.setTypeface(Typeface.MONOSPACE);
         LinearLayout live = card(pages[0], "LIVE LOG");
         homeLog = text(live, "Run output appears here while the exploit runs.", 12, ink, false);
         homeLog.setTypeface(Typeface.MONOSPACE);
     }
 
     private void buildLog() {
-        LinearLayout history = card(pages[1], "SESSION LOG");
+        LinearLayout history = card(pages[1], "SESSION LOG — LIVE");
         logEmpty = text(history, "No activity yet — run the flow or check for updates.", 13, muted, false);
         activityLog = text(history, "", 13, ink, false);
         activityLog.setTypeface(Typeface.MONOSPACE);
         activityLog.setTextIsSelectable(true);
+        activityLog.setBackground(fill(secondary, 8));
+        activityLog.setPadding(dp(12), dp(10), dp(12), dp(10));
         updateLogEmpty();
         action(history, "Copy diagnostics", () -> {
             ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -603,9 +660,10 @@ public class MainActivity extends Activity {
         });
         action(history, "Share diagnostics", this::shareDiagnostics);
         action(history, "Copy GitHub issue report", this::copyIssueReport);
-        LinearLayout changes = card(pages[1], "PROJECT CHANGELOG");
+        LinearLayout changes = card(pages[1], "CHANGELOG");
         action(changes, "Refresh changelog", this::loadChangelog);
         changelog = text(changes, "No changelog loaded yet. Tap Refresh changelog.", 14, muted, false);
+        changelog.setTypeface(Typeface.MONOSPACE);
     }
 
     private void buildSettings() {
@@ -636,11 +694,28 @@ public class MainActivity extends Activity {
             log("Default feed restored.");
         });
         LinearLayout appearance = card(pages[2], "APPEARANCE");
-        appearanceStatus = text(appearance, "Theme color: " + themeLabel(), 14, muted, false);
+        appearanceStatus = text(appearance, "Mode: " + modeLabel() + " • Accent: " + themeLabel(), 14, muted, false);
+        text(appearance, "Color mode", 12, muted, false);
+        LinearLayout modeRow = row();
+        modeRow.setGravity(Gravity.CENTER_VERTICAL);
+        String[] modeNames = {"Dark", "Light", "System"};
+        String[] modeValues = {"dark", "light", "system"};
+        for (int i = 0; i < modeNames.length; i++) {
+            final String value = modeValues[i];
+            Button button = makeButton(modeNames[i], false);
+            button.setTextSize(11);
+            button.setOnClickListener(v -> setColorModeChoice(value));
+            actions.add(button);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(44), 1);
+            if (i > 0) params.leftMargin = dp(8);
+            modeRow.addView(button, params);
+        }
+        appearance.addView(modeRow, spaced());
+        text(appearance, "Accent color", 12, muted, false);
         LinearLayout themeRow = row();
         themeRow.setGravity(Gravity.CENTER_VERTICAL);
-        String[] themeNames = {"System", "Blue", "Green", "Purple", "Orange"};
-        String[] themeValues = {"system", "blue", "green", "purple", "orange"};
+        String[] themeNames = {"Teal", "Amber", "Violet", "Material"};
+        String[] themeValues = {"teal", "amber", "violet", "material"};
         for (int i = 0; i < themeNames.length; i++) {
             final String name = themeNames[i];
             final String value = themeValues[i];
@@ -649,7 +724,7 @@ public class MainActivity extends Activity {
             button.setOnClickListener(v -> setThemeChoice(value));
             actions.add(button);
             LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(42), 1);
-            if (i > 0) params.leftMargin = dp(6);
+            if (i > 0) params.leftMargin = dp(8);
             themeRow.addView(button, params);
         }
         appearance.addView(themeRow, spaced());
@@ -732,6 +807,14 @@ public class MainActivity extends Activity {
 
     private String themeLabel() {
         String value = preferences.getString("theme_color", "system");
+        if ("blue".equals(value) || "green".equals(value)) value = "teal";
+        if ("purple".equals(value)) value = "violet";
+        if ("orange".equals(value) || "system".equals(value)) value = "material";
+        return value.substring(0, 1).toUpperCase(Locale.ROOT) + value.substring(1);
+    }
+
+    private String modeLabel() {
+        String value = preferences.getString("color_mode", "system");
         return value.substring(0, 1).toUpperCase(Locale.ROOT) + value.substring(1);
     }
 
@@ -742,6 +825,16 @@ public class MainActivity extends Activity {
         }
         preferences.edit().putString("theme_color", value).apply();
         Toast.makeText(this, "Theme color: " + value, Toast.LENGTH_SHORT).show();
+        recreate();
+    }
+
+    private void setColorModeChoice(String value) {
+        if (busy) {
+            Toast.makeText(this, "Wait for the current action to finish", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        preferences.edit().putString("color_mode", value).apply();
+        Toast.makeText(this, "Color mode: " + value, Toast.LENGTH_SHORT).show();
         recreate();
     }
 
@@ -759,6 +852,9 @@ public class MainActivity extends Activity {
             }
             tabs[i].setTextColor(i == pageIndex ? accent : muted);
             tabs[i].setTypeface(null, i == pageIndex ? Typeface.BOLD : Typeface.NORMAL);
+            tabs[i].setBackground(i == pageIndex ? fill(blend(accent, bg, .88f), 10)
+                    : fill(Color.TRANSPARENT, 10));
+            applyIcon(tabs[i], tabs[i].getText().toString(), false);
         }
     }
 
@@ -1178,8 +1274,12 @@ public class MainActivity extends Activity {
                 "Payload" + (payloadReady() ? " — verified" : ""));
         markStep(stepRoot, rooted(), "transport".equals(step) || "run".equals(step),
                 "Root access" + (exploitRooted ? " — exploit complete" : rooted() ? " — granted" : ""));
+        markStep(stepExploit, exploitRooted, "run".equals(step),
+                "Exploit" + (exploitRooted ? " — complete" : ""));
         markStep(stepKsu, ksuWorking, "ksu".equals(step),
                 "KernelSU" + (ksuWorking ? " — working" : ksuLoaded ? " — waiting for su" : ""));
+        markStep(stepManager, ksuWorking, "done".equals(step),
+                "Manager" + (ksuWorking ? " — authorized" : ksuLoaded ? " — permission pending" : ""));
         if (flowStepper != null) {
             boolean manager = managerInstalled();
             flowStepper.setState(feedReady(), payloadReady(), transportReady() || exploitRooted, rooted(),
@@ -1200,6 +1300,19 @@ public class MainActivity extends Activity {
         if (deviceChecked) device += "\nCompatibility: " + (supportedDevice() ? "SUPPORTED" : "UNSUPPORTED BUILD");
         if (feedReady()) device += "\nPayload: " + selected.id;
         deviceInfo.setText(device);
+        if (payloadInfo != null) {
+            payloadInfo.setText(feedReady()
+                    ? "ID: " + selected.id + "\nSize: " + selected.size + " bytes\nSHA-256: "
+                    + (selected.sha.isEmpty() ? "not provided" : shortCert(selected.sha))
+                    + "\nCache: " + (payloadReady() ? "verified" : "not downloaded")
+                    : "No payload selected yet.");
+        }
+        if (rootStatus != null) rootStatus.setText(ksuWorking ? "KSU Root Active"
+                : exploitRooted ? "Temp Root" : rootGranted ? "Root Active" : "No Session");
+        if (kernelStatus != null) kernelStatus.setText(ksuWorking ? "Auth: Granted"
+                : ksuLoaded ? "Module Loaded\nAuth: Pending" : "Not Loaded");
+        if (rootDot != null) rootDot.setBackground(fill(rooted() ? success : busy && "run".equals(step) ? warning : muted, 999));
+        if (ksuDot != null) ksuDot.setBackground(fill(ksuWorking ? success : ksuLoaded ? warning : muted, 999));
     }
 
     private void updateRootChip() {
@@ -1859,20 +1972,34 @@ public class MainActivity extends Activity {
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
     private LinearLayout column() { LinearLayout v = new LinearLayout(this); v.setOrientation(LinearLayout.VERTICAL); return v; }
     private LinearLayout row() { LinearLayout v = new LinearLayout(this); v.setOrientation(LinearLayout.HORIZONTAL); return v; }
+    private ImageView brandMark(int size) {
+        ImageView image = new ImageView(this);
+        int icon = drawableId("ic_launcher_foreground");
+        if (icon == 0) icon = drawableId("ic_launcher");
+        image.setImageResource(icon);
+        image.setBackground(shape(secondary, 10));
+        image.setPadding(size / 7, size / 7, size / 7, size / 7);
+        return image;
+    }
     private GradientDrawable shape(int color, int radius) {
         GradientDrawable drawable = new GradientDrawable();
         drawable.setColor(color); drawable.setCornerRadius(dp(radius)); drawable.setStroke(dp(1), border);
         return drawable;
     }
+    private GradientDrawable fill(int color, int radius) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color); drawable.setCornerRadius(dp(radius)); return drawable;
+    }
     private TextView chip(String value, int color) {
         TextView view = new TextView(this);
         view.setText(value);
-        view.setTextSize(12);
-        view.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        view.setTextSize(10);
+        view.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        view.setLetterSpacing(0.06f);
         view.setGravity(Gravity.CENTER);
         view.setTextColor(color);
-        view.setPadding(dp(10), 0, dp(10), 0);
-        view.setBackground(shape(blend(color, surface, .9f), 999));
+        view.setPadding(dp(12), 0, dp(12), 0);
+        view.setBackground(shape(surface, 999));
         int icon = drawableId("ic_ms_security");
         if (icon != 0) {
             Drawable d = getResources().getDrawable(icon);
@@ -1885,32 +2012,76 @@ public class MainActivity extends Activity {
     }
     private LinearLayout.LayoutParams spaced() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-        params.topMargin = dp(10); return params;
+        params.topMargin = dp(12); return params;
     }
     private LinearLayout card(LinearLayout parent, String heading) {
         LinearLayout card = column();
-        card.setBackground(shape(surface, 22));
-        card.setElevation(dp(2));
-        card.setPadding(dp(18), dp(16), dp(18), dp(18));
-        parent.addView(card, spaced()); text(card, heading, 12, accent, true); return card;
+        card.setBackground(shape(surface, 10));
+        card.setElevation(0);
+        card.setPadding(dp(16), dp(14), dp(16), dp(16));
+        parent.addView(card, spaced());
+        TextView label = text(card, heading, 10, muted, false);
+        label.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        label.setLetterSpacing(0.12f);
+        return card;
     }
     private TextView text(LinearLayout parent, String value, int size, int color, boolean bold) {
         TextView view = new TextView(this);
         view.setText(value); view.setTextSize(size); view.setTextColor(color);
         view.setTypeface(Typeface.create("sans-serif", bold ? Typeface.BOLD : Typeface.NORMAL));
-        view.setPadding(0, dp(5), 0, dp(6)); view.setLineSpacing(dp(3), 1f);
+        view.setPadding(0, dp(3), 0, dp(4)); view.setLineSpacing(dp(3), 1f);
         parent.addView(view, new LinearLayout.LayoutParams(-1, -2)); return view;
+    }
+    private TextView statusDot(int color) {
+        TextView dot = new TextView(this);
+        dot.setText(" ");
+        dot.setBackground(fill(color, 999));
+        return dot;
+    }
+    private LinearLayout metricCard(LinearLayout parent, String heading, TextView[] valueOut, TextView[] dotOut) {
+        LinearLayout card = column();
+        card.setPadding(dp(14), dp(12), dp(14), dp(14));
+        card.setBackground(shape(surface, 10));
+        LinearLayout top = row();
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView dot = statusDot(muted);
+        dotOut[0] = dot;
+        top.addView(dot, new LinearLayout.LayoutParams(dp(8), dp(8)));
+        TextView h = new TextView(this);
+        h.setText(heading.toUpperCase(Locale.ROOT));
+        h.setTextSize(10); h.setTextColor(muted); h.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        h.setLetterSpacing(0.12f); h.setPadding(dp(8), 0, 0, 0);
+        top.addView(h, new LinearLayout.LayoutParams(0, -2, 1));
+        card.addView(top);
+        TextView value = text(card, "", 14, ink, true);
+        value.setPadding(0, dp(8), 0, 0);
+        valueOut[0] = value;
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -2, 1);
+        if (parent.getChildCount() > 0) params.leftMargin = dp(10);
+        parent.addView(card, params);
+        return card;
+    }
+    private Button tabButton(String label) {
+        Button button = new Button(this);
+        button.setText(label); button.setAllCaps(false); button.setTextSize(14);
+        button.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        button.setMinHeight(dp(48)); button.setMinimumWidth(0); button.setPadding(0, 0, 0, dp(3));
+        button.setTextColor(muted);
+        button.setBackgroundColor(Color.TRANSPARENT);
+        applyIcon(button, label, false);
+        return button;
     }
     private Button makeButton(String label, boolean primary) {
         Button button = new Button(this);
         button.setText(label); button.setAllCaps(false); button.setTextSize(14);
         button.setMinHeight(dp(48)); button.setMinimumWidth(0);
-        button.setPadding(dp(12), dp(10), dp(12), dp(10));
-        button.setTextColor(primary ? bg : accent);
-        button.setElevation(primary ? dp(2) : 0);
-        int fill = primary ? accent : blend(accent, bg, .88f);
-        button.setBackground(new RippleDrawable(ColorStateList.valueOf(blend(accent, surface, .55f)),
-                shape(fill, 14), null));
+        button.setPadding(dp(12), dp(9), dp(12), dp(9));
+        button.setTextColor(primary ? primaryFg : ink);
+        button.setTypeface(Typeface.create("sans-serif", Typeface.BOLD));
+        button.setElevation(0);
+        int fillColor = primary ? accent : secondary;
+        button.setBackground(new RippleDrawable(ColorStateList.valueOf(blend(accent, surface, .62f)),
+                shape(fillColor, 10), null));
         applyIcon(button, label, primary);
         return button;
     }
@@ -1923,7 +2094,7 @@ public class MainActivity extends Activity {
         }
         try {
             Drawable drawable = getResources().getDrawable(icon).mutate();
-            drawable.setTint(primary ? bg : accent);
+            drawable.setTint(primary ? primaryFg : button.getCurrentTextColor());
             button.setCompoundDrawablesWithIntrinsicBounds(drawable, null, null, null);
             button.setCompoundDrawablePadding(dp(8));
         } catch (Exception ignored) {
@@ -1935,8 +2106,8 @@ public class MainActivity extends Activity {
         if (l.equals("home")) return drawableId("ic_ms_home");
         if (l.equals("log")) return drawableId("ic_ms_article");
         if (l.equals("settings")) return drawableId("ic_ms_settings");
-        if (l.equals("system") || l.equals("blue") || l.equals("green")
-                || l.equals("purple") || l.equals("orange"))
+        if (l.equals("system") || l.equals("teal") || l.equals("amber")
+                || l.equals("violet") || l.equals("material"))
             return drawableId("ic_ms_palette");
         if (l.contains("theme") || l.contains("color")) return drawableId("ic_ms_palette");
         if (l.contains("changelog") || l.contains("change log")) return drawableId("ic_ms_article");
@@ -1967,6 +2138,27 @@ public class MainActivity extends Activity {
                     .start();
             callback.run();
         }); parent.addView(button, spaced()); actions.add(button); return button;
+    }
+    private static final class MeshDrawable extends Drawable {
+        private final int bg, accent;
+        private final boolean dark;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        MeshDrawable(int bg, int accent, boolean dark) { this.bg = bg; this.accent = accent; this.dark = dark; }
+        @Override public void draw(Canvas canvas) {
+            canvas.drawColor(bg);
+            int w = Math.max(1, getBounds().width()), h = Math.max(1, getBounds().height());
+            paint.setShader(new RadialGradient(w * .2f, h * .1f, Math.max(w, h) * .55f,
+                    alpha(accent, dark ? 34 : 24), Color.TRANSPARENT, Shader.TileMode.CLAMP));
+            canvas.drawRect(getBounds(), paint);
+            paint.setShader(new RadialGradient(w * .82f, h * .8f, Math.max(w, h) * .48f,
+                    alpha(0xFF635BFF, dark ? 28 : 18), Color.TRANSPARENT, Shader.TileMode.CLAMP));
+            canvas.drawRect(getBounds(), paint);
+            paint.setShader(null);
+        }
+        private static int alpha(int color, int alpha) { return (color & 0x00FFFFFF) | (alpha << 24); }
+        @Override public void setAlpha(int alpha) { }
+        @Override public void setColorFilter(android.graphics.ColorFilter colorFilter) { }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.OPAQUE; }
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         super.onSaveInstanceState(state); state.putInt("page", pageIndex);

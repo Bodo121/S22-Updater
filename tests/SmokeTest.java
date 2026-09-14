@@ -33,7 +33,7 @@ public final class SmokeTest extends Instrumentation {
     }
     private void check(Activity activity) {
         View decor = activity.getWindow().getDecorView();
-        for (String label : new String[]{"Run Device Doctor", "Check root", "Authorize Shizuku", "Open KernelSU Manager", "Recheck KernelSU", "Refresh changelog", "Save feed URL", "Check for app updates", "Diagnose Shizuku handshake", "Share diagnostics", "Copy GitHub issue report", "Clear payload cache", "System", "Blue", "Green", "Purple", "Orange"}) {
+        for (String label : new String[]{"Run Device Doctor", "Check root", "Authorize Shizuku", "Open KernelSU Manager", "Recheck KernelSU", "Refresh changelog", "Save feed URL", "Check for app updates", "Diagnose Shizuku handshake", "Share diagnostics", "Copy GitHub issue report", "Clear payload cache", "Dark", "Light", "System", "Teal", "Amber", "Violet", "Material"}) {
             TextView button = find(decor, label);
             if (button == null || !button.hasOnClickListeners()) throw new AssertionError("Unwired: " + label);
         }
