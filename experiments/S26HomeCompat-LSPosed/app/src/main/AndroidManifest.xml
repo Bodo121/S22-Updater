@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:allowBackup="false"
+        android:label="S26 Home Compat (Experimental)"
+        android:supportsRtl="true">
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="Experimental workaround for S26 One UI Home task-stack crash on One UI 8. Hooks the incompatible TopTaskSource coroutine; not a full API shim." />
+        <meta-data android:name="xposedminversion" android:value="93" />
+    </application>
+</manifest>
